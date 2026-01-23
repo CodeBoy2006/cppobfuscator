@@ -12,6 +12,8 @@ pub struct Config {
     pub constlift: bool,
     pub strip_comments: bool,
     pub preserve: Vec<String>,
+    pub wizard: bool,
+    pub wizard_end: String,
 }
 
 impl Config {
@@ -25,6 +27,8 @@ impl Config {
         let mut constlift = true;
         let mut strip_comments = true;
         let mut preserve = Vec::new();
+        let mut wizard = false;
+        let mut wizard_end = String::from("END");
 
         let mut args = env::args().skip(1).peekable();
         while let Some(arg) = args.next() {
@@ -53,8 +57,21 @@ impl Config {
                     let raw = args.next().ok_or("--preserve requires a name")?;
                     preserve.push(raw);
                 }
+                "--wizard" => wizard = true,
+                "--wizard-end" => {
+                    let raw = args.next().ok_or("--wizard-end requires a value")?;
+                    if raw.is_empty() {
+                        return Err("--wizard-end cannot be empty".to_string());
+                    }
+                    wizard_end = raw;
+                    wizard = true;
+                }
                 _ => return Err(format!("Unknown argument: {arg}\n\n{}", Self::usage())),
             }
+        }
+
+        if wizard && input.is_some() {
+            return Err("--wizard cannot be used with --input".to_string());
         }
 
         Ok(Self {
@@ -67,6 +84,8 @@ impl Config {
             constlift,
             strip_comments,
             preserve,
+            wizard,
+            wizard_end,
         })
     }
 
@@ -86,6 +105,8 @@ OPTIONS:
   --no-constlift            Disable constant expression lifting
   --keep-comments           Preserve comments (default strips)
   --preserve <name>         Preserve an identifier (repeatable)
+  --wizard                  Interactive mode: paste code, end with marker line
+  --wizard-end <marker>     Marker line to finish wizard input (default: END)
   -h, --help                Show this help
 "#;
         text.to_string()

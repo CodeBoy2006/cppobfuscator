@@ -2,7 +2,7 @@ mod config;
 mod lexer;
 mod obfuscate;
 
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 
 use config::Config;
 use obfuscate::{obfuscate, ObfuscateConfig};
@@ -20,18 +20,21 @@ fn main() {
         }
     };
 
-    let mut input = String::new();
-    if let Some(path) = config.input.as_ref() {
-        input = std::fs::read_to_string(path).unwrap_or_else(|err| {
+    let input = if config.wizard {
+        read_wizard_input(&config.wizard_end)
+    } else if let Some(path) = config.input.as_ref() {
+        std::fs::read_to_string(path).unwrap_or_else(|err| {
             eprintln!("Failed to read {}: {err}", path.display());
             std::process::exit(1);
-        });
+        })
     } else {
-        if let Err(err) = io::stdin().read_to_string(&mut input) {
+        let mut buffer = String::new();
+        if let Err(err) = io::stdin().read_to_string(&mut buffer) {
             eprintln!("Failed to read stdin: {err}");
             std::process::exit(1);
         }
-    }
+        buffer
+    };
 
     let obfuscate_config = ObfuscateConfig {
         seed: config.seed,
@@ -57,4 +60,32 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+fn read_wizard_input(marker: &str) -> String {
+    eprintln!("Wizard mode: paste C++ code, end with line: {marker}");
+    eprintln!("Press Ctrl-D to finish early.");
+
+    let stdin = io::stdin();
+    let mut handle = stdin.lock();
+    let mut input = String::new();
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let bytes = handle.read_line(&mut line).unwrap_or_else(|err| {
+            eprintln!("Failed to read stdin: {err}");
+            std::process::exit(1);
+        });
+        if bytes == 0 {
+            break;
+        }
+        let trimmed = line.trim_end_matches(|c| c == '\n' || c == '\r');
+        if trimmed == marker {
+            break;
+        }
+        input.push_str(&line);
+    }
+
+    input
 }
