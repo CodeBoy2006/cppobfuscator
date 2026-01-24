@@ -1,6 +1,8 @@
 # cppobfuscator
 
-[English (默认)](README.md) | 中文
+[English](README.md) | 中文
+
+> ⚠️ 注意： 请遵守竞赛平台规则。若因滥用本工具导致违规，后果自负。
 
 ## 概述
 

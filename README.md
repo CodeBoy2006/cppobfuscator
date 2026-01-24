@@ -2,6 +2,8 @@
 
 English (default) | [Chinese (中文)](README.zh.md)
 
+> ⚠️ Note: Please abide by platform regulations. You are solely responsible for any consequences resulting from the misuse of this tool.
+
 ## Overview
 
 `cppobfuscator` is a single-file C++ obfuscator written in Rust. It can:
