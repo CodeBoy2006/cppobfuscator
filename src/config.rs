@@ -40,7 +40,11 @@ impl Config {
         let mut expand_macros = true;
         let mut simple_names = false;
 
-        let mut args = env::args().skip(1).peekable();
+        let raw_args: Vec<String> = env::args().skip(1).collect();
+        let mut args = raw_args.into_iter().peekable();
+        if args.peek().is_none() {
+            wizard = true;
+        }
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "-h" | "--help" => return Err(Self::usage()),

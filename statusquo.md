@@ -90,3 +90,9 @@
 - **Status:** Completed
 - **Next Steps:** None.
 - **Context:** Verified with `cargo run -- -i test.cpp -o /tmp/test_obf.cpp --simple-names`; constlift pattern not present.
+
+## [2026-01-24 14:01] Default wizard mode with simple-names prompt
+- **Changes:** Defaulted to wizard mode with no args and added an interactive simple-names prompt in wizard flow.
+- **Status:** Completed
+- **Next Steps:** None.
+- **Context:** Verified wizard flow via stdin pipe and compiled output.

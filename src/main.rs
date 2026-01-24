@@ -22,8 +22,17 @@ fn main() {
         }
     };
 
+    let mut simple_names = config.simple_names;
+    let mut constlift = config.constlift;
+
     let mut input = if config.wizard {
-        read_wizard_input(&config.wizard_end)
+        let stdin = io::stdin();
+        let mut handle = stdin.lock();
+        if !simple_names && prompt_simple_names(&mut handle) {
+            simple_names = true;
+            constlift = false;
+        }
+        read_wizard_input(&mut handle, &config.wizard_end)
     } else if let Some(path) = config.input.as_ref() {
         std::fs::read_to_string(path).unwrap_or_else(|err| {
             eprintln!("Failed to read {}: {err}", path.display());
@@ -47,13 +56,13 @@ fn main() {
         rename: config.rename,
         minify: config.minify,
         inline: config.inline,
-        constlift: config.constlift,
+        constlift,
         strip_comments: config.strip_comments,
         strip_unused_macros: config.strip_unused_macros,
         strip_unused_functions: config.strip_unused_functions,
         strip_unused_globals: config.strip_unused_globals,
         preserve: config.preserve,
-        simple_names: config.simple_names,
+        simple_names,
     };
 
     let output = obfuscate(&input, &obfuscate_config);
@@ -72,12 +81,10 @@ fn main() {
     }
 }
 
-fn read_wizard_input(marker: &str) -> String {
+fn read_wizard_input(handle: &mut dyn BufRead, marker: &str) -> String {
     eprintln!("Wizard mode: paste C++ code, end with line: {marker}");
     eprintln!("Press Ctrl-D to finish early.");
 
-    let stdin = io::stdin();
-    let mut handle = stdin.lock();
     let mut input = String::new();
     let mut line = String::new();
 
@@ -98,4 +105,14 @@ fn read_wizard_input(marker: &str) -> String {
     }
 
     input
+}
+
+fn prompt_simple_names(handle: &mut dyn BufRead) -> bool {
+    eprint!("Enable simple-names? [y/N]: ");
+    let _ = io::stderr().flush();
+    let mut line = String::new();
+    if handle.read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
