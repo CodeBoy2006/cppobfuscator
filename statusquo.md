@@ -108,3 +108,9 @@
 - **Status:** Completed
 - **Next Steps:** Consider adding tests for suffix parsing and large literals.
 - **Context:** Verified with `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf`.
+
+## [2026-01-24 14:28] Increase const obfuscation variety
+- **Changes:** Added per-occurrence seeding, more leaf/zero/one forms, and noisy wrappers in constlift; casted sizeof uses to avoid warnings.
+- **Status:** Completed
+- **Next Steps:** None.
+- **Context:** Verified with `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf`.

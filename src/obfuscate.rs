@@ -919,10 +919,14 @@ fn substitute_expr(def: &SimpleFunction, args: &[Vec<Token>]) -> Vec<Token> {
 }
 
 fn apply_constlift(tokens: &mut [Token], seed: u64) {
+    let mut counter = 0u64;
     for token in tokens.iter_mut() {
         if token.kind == TokenKind::Number {
             if let Some((value, suffix)) = parse_integer_literal(&token.text) {
-                let mut rng = ConstRng::new(hash64(&token.text, seed));
+                let hash = hash64(&token.text, seed)
+                    ^ counter.wrapping_mul(0x9E3779B97F4A7C15);
+                counter = counter.wrapping_add(1);
+                let mut rng = ConstRng::new(hash);
                 let depth = choose_const_depth(value, &mut rng);
                 token.text = obfuscate_const(value, depth, &mut rng, &suffix);
             }
@@ -1030,6 +1034,7 @@ fn obfuscate_const(value: u64, depth: u8, rng: &mut ConstRng, suffix: &str) -> S
         }
     };
 
+    expr = decorate_expr(expr, rng, suffix);
     if (rng.next_u64() & 1) == 0 {
         expr = format!("(~(~{expr}))");
     }
@@ -1044,21 +1049,20 @@ fn bounded_rand(rng: &mut ConstRng, max_inclusive: u64) -> u64 {
 }
 
 fn leaf_expr(value: u64, rng: &mut ConstRng, suffix: &str) -> String {
+    if value == 0 {
+        return zero_expr(rng, suffix);
+    }
+    if value == 1 {
+        return one_expr(rng, suffix);
+    }
+
     let mut choices = Vec::new();
     choices.push(format!("{}{}", value, suffix));
     choices.push(format!("0x{:x}{}", value, suffix));
     choices.push(format!("0{:o}{}", value, suffix));
 
-    if value == 0 {
-        choices.push("(!1)".to_string());
-        choices.push("(sizeof(char)-sizeof(char))".to_string());
-    }
-    if value == 1 {
-        choices.push("(!0)".to_string());
-        choices.push("sizeof(char)".to_string());
-    }
     if (2..=32).contains(&value) {
-        choices.push(format!("sizeof(char[{}])", value));
+        choices.push(format!("((long long)sizeof(char[{}]))", value));
     }
     if (33..=126).contains(&value) {
         let ch = value as u8 as char;
@@ -1067,6 +1071,59 @@ fn leaf_expr(value: u64, rng: &mut ConstRng, suffix: &str) -> String {
         }
     }
 
+    if value <= 0xFFFF {
+        let mask = bounded_rand(rng, 0xFFFF);
+        let left = format!("0x{:x}{}", value ^ mask, suffix);
+        let right = format!("0x{:x}{}", mask, suffix);
+        choices.push(format!("({left}^{right})"));
+    }
+
+    let mut expr = choices[(rng.next_u64() as usize) % choices.len()].clone();
+    if (rng.next_u64() & 1) == 0 {
+        expr = decorate_expr(expr, rng, suffix);
+    }
+    expr
+}
+
+fn decorate_expr(expr: String, rng: &mut ConstRng, suffix: &str) -> String {
+    let mut out = expr;
+    let roll = (rng.next_u64() % 4) as u8;
+    let zero = zero_expr(rng, suffix);
+    out = match roll {
+        0 => format!("({out}+{zero})"),
+        1 => format!("({out}-{zero})"),
+        2 => format!("({out}^{zero})"),
+        _ => format!("({out}|{zero})"),
+    };
+    out
+}
+
+fn zero_expr(rng: &mut ConstRng, suffix: &str) -> String {
+    let r = bounded_rand(rng, 0xFFFF);
+    let choices = [
+        format!("0{}", suffix),
+        format!("0x0{}", suffix),
+        "((long long)sizeof(char)-(long long)sizeof(char))".to_string(),
+        "((!0)-(!0))".to_string(),
+        format!("(0x{:x}{}^0x{:x}{})", r, suffix, r, suffix),
+        format!("(0x{:x}{}-0x{:x}{})", r, suffix, r, suffix),
+        format!("(0x{:x}{}&0x0{})", r, suffix, suffix),
+    ];
+    choices[(rng.next_u64() as usize) % choices.len()].clone()
+}
+
+fn one_expr(rng: &mut ConstRng, suffix: &str) -> String {
+    let r = bounded_rand(rng, 0xFFFF);
+    let zero = zero_expr(rng, suffix);
+    let choices = [
+        format!("1{}", suffix),
+        format!("0x1{}", suffix),
+        "(!0)".to_string(),
+        "((long long)sizeof(char))".to_string(),
+        format!("({zero}+1)"),
+        format!("(0x{:x}{}^0x{:x}{})+1", r, suffix, r, suffix),
+        "((!1)+(!0))".to_string(),
+    ];
     choices[(rng.next_u64() as usize) % choices.len()].clone()
 }
 
