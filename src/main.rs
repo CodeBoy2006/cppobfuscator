@@ -45,6 +45,7 @@ fn main() {
         constlift: config.constlift,
         strip_comments: config.strip_comments,
         strip_unused_macros: config.strip_unused_macros,
+        strip_unused_functions: config.strip_unused_functions,
         preserve: config.preserve,
     };
 

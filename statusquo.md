@@ -42,3 +42,9 @@
 - **Status:** Completed
 - **Next Steps:** Consider adding a regression test for preprocessor/minifier output.
 - **Context:** `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf` now succeed.
+
+## [2026-01-24 12:57] Strip unused functions
+- **Changes:** Added unused-function stripping with a new config flag and identifier scanning for usage detection.
+- **Status:** Completed
+- **Next Steps:** Consider adding regression tests for function stripping edge cases.
+- **Context:** Verified with `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf`.

@@ -12,6 +12,7 @@ pub struct ObfuscateConfig {
     pub constlift: bool,
     pub strip_comments: bool,
     pub strip_unused_macros: bool,
+    pub strip_unused_functions: bool,
     pub preserve: Vec<String>,
 }
 
@@ -23,7 +24,13 @@ struct SimpleFunction {
 }
 
 pub fn obfuscate(input: &str, config: &ObfuscateConfig) -> String {
-    let mut tokens = crate::lexer::tokenize(input);
+    let mut raw = input.to_string();
+    if config.strip_unused_functions {
+        if let Some(stripped) = semantics::strip_unused_functions(&raw) {
+            raw = stripped;
+        }
+    }
+    let mut tokens = crate::lexer::tokenize(&raw);
     if config.strip_unused_macros {
         tokens = remove_unused_macros(&tokens);
     }
@@ -37,7 +44,7 @@ pub fn obfuscate(input: &str, config: &ObfuscateConfig) -> String {
     }
 
     if config.rename {
-        let declared = semantics::collect_declared_identifiers(input);
+        let declared = semantics::collect_declared_identifiers(&raw);
         apply_renames(&mut tokens, config.seed, &preserve, declared.as_ref());
     }
 
