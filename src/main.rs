@@ -51,6 +51,7 @@ fn main() {
         strip_comments: config.strip_comments,
         strip_unused_macros: config.strip_unused_macros,
         strip_unused_functions: config.strip_unused_functions,
+        strip_unused_globals: config.strip_unused_globals,
         preserve: config.preserve,
     };
 

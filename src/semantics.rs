@@ -22,6 +22,13 @@ struct FunctionDefinition {
     def_range: (usize, usize),
 }
 
+#[derive(Debug, Clone)]
+struct GlobalDeclaration {
+    name: String,
+    name_range: (usize, usize),
+    def_range: (usize, usize),
+}
+
 pub fn strip_unused_functions(input: &str) -> Option<String> {
     let mut parser = Parser::new();
     let language = tree_sitter_cpp::LANGUAGE;
@@ -58,6 +65,66 @@ pub fn strip_unused_functions(input: &str) -> Option<String> {
         .into_iter()
         .filter(|def| !used.contains(&def.name))
         .map(|def| def.def_range)
+        .collect();
+
+    if remove_ranges.is_empty() {
+        return Some(input.to_string());
+    }
+
+    remove_ranges.sort_by_key(|range| range.0);
+    let mut out = String::with_capacity(input.len());
+    let mut last = 0;
+    for (start, end) in remove_ranges {
+        if start > last {
+            out.push_str(&input[last..start]);
+        }
+        if end > last {
+            last = end;
+        }
+    }
+    if last < input.len() {
+        out.push_str(&input[last..]);
+    }
+
+    Some(out)
+}
+
+pub fn strip_unused_globals(input: &str) -> Option<String> {
+    let mut parser = Parser::new();
+    let language = tree_sitter_cpp::LANGUAGE;
+    if parser.set_language(&language.into()).is_err() {
+        return None;
+    }
+    let tree = parser.parse(input, None)?;
+    let source = input.as_bytes();
+
+    let mut globals = Vec::new();
+    collect_global_declarations(tree.root_node(), source, false, false, &mut globals);
+
+    if globals.is_empty() {
+        return Some(input.to_string());
+    }
+
+    let name_ranges: Vec<(usize, usize)> = globals
+        .iter()
+        .map(|decl| decl.name_range)
+        .collect();
+
+    let mut used = HashSet::new();
+    collect_used_identifiers_excluding(tree.root_node(), source, &name_ranges, &mut used);
+
+    for token in lexer::tokenize(input) {
+        if token.kind == TokenKind::Preprocessor {
+            scan_identifiers(&token.text, |ident| {
+                used.insert(ident.to_string());
+            });
+        }
+    }
+
+    let mut remove_ranges: Vec<(usize, usize)> = globals
+        .into_iter()
+        .filter(|decl| !used.contains(&decl.name))
+        .map(|decl| decl.def_range)
         .collect();
 
     if remove_ranges.is_empty() {
@@ -242,6 +309,133 @@ fn extract_declarator_identifier(node: Node, source: &[u8]) -> Option<String> {
     }
 }
 
+fn collect_global_declarations(
+    node: Node,
+    source: &[u8],
+    in_function: bool,
+    in_type_scope: bool,
+    globals: &mut Vec<GlobalDeclaration>,
+) {
+    let kind = node.kind();
+    let in_function = in_function || matches!(kind, "function_definition" | "lambda_expression");
+    let in_type_scope =
+        in_type_scope || matches!(kind, "class_specifier" | "struct_specifier" | "union_specifier");
+
+    if in_function || in_type_scope {
+        return;
+    }
+
+    if kind == "declaration" {
+        if let Some(global) = parse_global_declaration(node, source) {
+            globals.push(global);
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_global_declarations(child, source, in_function, in_type_scope, globals);
+    }
+}
+
+fn parse_global_declaration(node: Node, source: &[u8]) -> Option<GlobalDeclaration> {
+    let declarators = collect_declaration_declarators(node);
+    if declarators.len() != 1 {
+        return None;
+    }
+    let declarator = declarators[0]
+        .child_by_field_name("declarator")
+        .unwrap_or(declarators[0]);
+    if contains_function_declarator(declarator) {
+        return None;
+    }
+    let id_node = extract_declarator_identifier_node(declarator)?;
+    let name = id_node.utf8_text(source).ok()?.to_string();
+    if name.is_empty() {
+        return None;
+    }
+    Some(GlobalDeclaration {
+        name,
+        name_range: (id_node.start_byte(), id_node.end_byte()),
+        def_range: (node.start_byte(), node.end_byte()),
+    })
+}
+
+fn collect_declaration_declarators(node: Node) -> Vec<Node> {
+    let mut declarators = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "init_declarator" {
+            declarators.push(child);
+        }
+    }
+    if !declarators.is_empty() {
+        return declarators;
+    }
+    let count = node.child_count();
+    for i in 0..count {
+        let idx = i as u32;
+        if node.field_name_for_child(idx) == Some("declarator") {
+            if let Some(child) = node.child(idx) {
+                declarators.push(child);
+            }
+        }
+    }
+    declarators
+}
+
+fn contains_function_declarator(node: Node) -> bool {
+    if node.kind() == "function_declarator" {
+        return true;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if contains_function_declarator(child) {
+            return true;
+        }
+    }
+    false
+}
+
+fn extract_declarator_identifier_node(node: Node) -> Option<Node> {
+    match node.kind() {
+        "identifier" | "field_identifier" | "namespace_identifier" | "type_identifier" => {
+            Some(node)
+        }
+        "qualified_identifier" => rightmost_identifier_node(node),
+        "operator_name" => None,
+        _ => {
+            if let Some(inner) = node.child_by_field_name("declarator") {
+                return extract_declarator_identifier_node(inner);
+            }
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if let Some(found) = extract_declarator_identifier_node(child) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+    }
+}
+
+fn rightmost_identifier_node(node: Node) -> Option<Node> {
+    match node.kind() {
+        "identifier" | "field_identifier" | "type_identifier" | "namespace_identifier" => {
+            Some(node)
+        }
+        _ => {
+            let mut cursor = node.walk();
+            let mut last = None;
+            for child in node.named_children(&mut cursor) {
+                if let Some(found) = rightmost_identifier_node(child) {
+                    last = Some(found);
+                }
+            }
+            last
+        }
+    }
+}
+
 fn collect_used_identifiers(
     node: Node,
     source: &[u8],
@@ -262,6 +456,35 @@ fn collect_used_identifiers(
     for child in node.named_children(&mut cursor) {
         collect_used_identifiers(child, source, decl_ranges, used);
     }
+}
+
+fn collect_used_identifiers_excluding(
+    node: Node,
+    source: &[u8],
+    excluded_ranges: &[(usize, usize)],
+    used: &mut HashSet<String>,
+) {
+    let kind = node.kind();
+    if matches!(kind, "identifier" | "field_identifier" | "namespace_identifier") {
+        let start = node.start_byte();
+        let end = node.end_byte();
+        if !is_range_excluded(start, end, excluded_ranges) {
+            if let Ok(text) = node.utf8_text(source) {
+                used.insert(text.to_string());
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_used_identifiers_excluding(child, source, excluded_ranges, used);
+    }
+}
+
+fn is_range_excluded(start: usize, end: usize, ranges: &[(usize, usize)]) -> bool {
+    ranges
+        .iter()
+        .any(|(range_start, range_end)| start >= *range_start && end <= *range_end)
 }
 
 fn is_in_ranges(pos: usize, ranges: &[(usize, usize)]) -> bool {

@@ -13,6 +13,7 @@ pub struct ObfuscateConfig {
     pub strip_comments: bool,
     pub strip_unused_macros: bool,
     pub strip_unused_functions: bool,
+    pub strip_unused_globals: bool,
     pub preserve: Vec<String>,
 }
 
@@ -27,6 +28,11 @@ pub fn obfuscate(input: &str, config: &ObfuscateConfig) -> String {
     let mut raw = input.to_string();
     if config.strip_unused_functions {
         if let Some(stripped) = semantics::strip_unused_functions(&raw) {
+            raw = stripped;
+        }
+    }
+    if config.strip_unused_globals {
+        if let Some(stripped) = semantics::strip_unused_globals(&raw) {
             raw = stripped;
         }
     }

@@ -13,6 +13,7 @@ pub struct Config {
     pub strip_comments: bool,
     pub strip_unused_macros: bool,
     pub strip_unused_functions: bool,
+    pub strip_unused_globals: bool,
     pub preserve: Vec<String>,
     pub wizard: bool,
     pub wizard_end: String,
@@ -31,6 +32,7 @@ impl Config {
         let mut strip_comments = true;
         let mut strip_unused_macros = true;
         let mut strip_unused_functions = true;
+        let mut strip_unused_globals = true;
         let mut preserve = Vec::new();
         let mut wizard = false;
         let mut wizard_end = String::from("END");
@@ -61,6 +63,7 @@ impl Config {
                 "--keep-comments" => strip_comments = false,
                 "--no-strip-unused-macros" => strip_unused_macros = false,
                 "--no-strip-unused-functions" => strip_unused_functions = false,
+                "--no-strip-unused-globals" => strip_unused_globals = false,
                 "--preserve" => {
                     let raw = args.next().ok_or("--preserve requires a name")?;
                     preserve.push(raw);
@@ -94,6 +97,7 @@ impl Config {
             strip_comments,
             strip_unused_macros,
             strip_unused_functions,
+            strip_unused_globals,
             preserve,
             wizard,
             wizard_end,
@@ -118,6 +122,7 @@ OPTIONS:
   --keep-comments           Preserve comments (default strips)
   --no-strip-unused-macros  Keep unused #define macros (default strips)
   --no-strip-unused-functions  Keep unused function definitions (default strips)
+  --no-strip-unused-globals  Keep unused global variables/objects (default strips)
   --no-expand-macros        Skip macro expansion before obfuscation
   --preserve <name>         Preserve an identifier (repeatable)
   --wizard                  Interactive mode: paste code, end with marker line

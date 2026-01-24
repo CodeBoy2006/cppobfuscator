@@ -60,3 +60,9 @@
 - **Status:** Completed
 - **Next Steps:** Consider adding tests for variadic or token-paste macros that are intentionally skipped.
 - **Context:** Verified with `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf`.
+
+## [2026-01-24 13:27] Strip unused globals
+- **Changes:** Added unused global variable/object stripping with a new CLI flag and tree-sitter pass.
+- **Status:** Completed
+- **Next Steps:** Consider extending removal to handle multi-declarator statements if needed.
+- **Context:** Verified with `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf`.
