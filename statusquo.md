@@ -36,3 +36,9 @@
 - **Status:** Completed
 - **Next Steps:** Fix minifier to preserve newline before preprocessor directives, then re-test.
 - **Context:** `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` succeeded, but `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf` failed (stray `#` from `;#define` on line 3).
+
+## [2026-01-24 12:46] Fix obfuscation compile regression
+- **Changes:** Ensured minifier inserts a newline before preprocessor directives and limited declarator harvesting to avoid renaming initializer identifiers.
+- **Status:** Completed
+- **Next Steps:** Consider adding a regression test for preprocessor/minifier output.
+- **Context:** `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf` now succeed.

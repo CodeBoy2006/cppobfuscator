@@ -103,6 +103,11 @@ fn collect_type_parameter_name(node: Node, source: &[u8], declared: &mut HashSet
 
 fn collect_declarator_names(node: Node, source: &[u8], declared: &mut HashSet<String>) {
     match node.kind() {
+        "init_declarator" => {
+            if let Some(declarator) = node.child_by_field_name("declarator") {
+                collect_declarator_names(declarator, source, declared);
+            }
+        }
         "identifier" | "field_identifier" | "type_identifier" | "namespace_identifier" => {
             if let Ok(text) = node.utf8_text(source) {
                 declared.insert(text.to_string());

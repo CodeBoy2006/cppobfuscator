@@ -864,6 +864,9 @@ fn render_minified(tokens: &[Token], strip_comments: bool) -> String {
 
     for token in tokens {
         if token.kind == TokenKind::Preprocessor {
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
             out.push_str(&token.text);
             if !token.text.ends_with('\n') {
                 out.push('\n');
