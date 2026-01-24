@@ -53,6 +53,7 @@ fn main() {
         strip_unused_functions: config.strip_unused_functions,
         strip_unused_globals: config.strip_unused_globals,
         preserve: config.preserve,
+        simple_names: config.simple_names,
     };
 
     let output = obfuscate(&input, &obfuscate_config);

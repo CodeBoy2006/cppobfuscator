@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use crate::lexer::{Token, TokenKind};
+use crate::lexer::{cpp_keywords, Token, TokenKind};
 use crate::semantics;
 
 #[derive(Debug, Clone)]
@@ -15,6 +15,7 @@ pub struct ObfuscateConfig {
     pub strip_unused_functions: bool,
     pub strip_unused_globals: bool,
     pub preserve: Vec<String>,
+    pub simple_names: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -51,7 +52,13 @@ pub fn obfuscate(input: &str, config: &ObfuscateConfig) -> String {
 
     if config.rename {
         let declared = semantics::collect_declared_identifiers(&raw);
-        apply_renames(&mut tokens, config.seed, &preserve, declared.as_ref());
+        apply_renames(
+            &mut tokens,
+            config.seed,
+            &preserve,
+            declared.as_ref(),
+            config.simple_names,
+        );
     }
 
     if config.constlift {
@@ -448,6 +455,7 @@ fn apply_renames(
     seed: u64,
     preserve: &HashSet<String>,
     declared: Option<&HashSet<String>>,
+    simple_names: bool,
 ) {
     let mut identifiers = BTreeSet::new();
     let mut existing = HashSet::new();
@@ -465,9 +473,18 @@ fn apply_renames(
     used.extend(existing.into_iter());
 
     let mut mapping = HashMap::new();
-    for name in identifiers {
-        let new_name = generate_name(&name, seed, &mut used);
-        mapping.insert(name, new_name);
+    if simple_names {
+        let reserved: HashSet<String> = cpp_keywords().into_iter().map(|kw| kw.to_string()).collect();
+        let mut counter = 0usize;
+        for name in identifiers {
+            let new_name = next_short_name(&mut counter, &mut used, &reserved);
+            mapping.insert(name, new_name);
+        }
+    } else {
+        for name in identifiers {
+            let new_name = generate_name(&name, seed, &mut used);
+            mapping.insert(name, new_name);
+        }
     }
 
     for token in tokens.iter_mut() {
@@ -513,6 +530,49 @@ fn generate_name(original: &str, seed: u64, used: &mut HashSet<String>) -> Strin
         }
         h = h.wrapping_add(0x9E3779B97F4A7C15);
     }
+}
+
+fn next_short_name(
+    counter: &mut usize,
+    used: &mut HashSet<String>,
+    reserved: &HashSet<String>,
+) -> String {
+    loop {
+        let candidate = short_name(*counter);
+        *counter += 1;
+        if !used.contains(&candidate) && !reserved.contains(&candidate) {
+            used.insert(candidate.clone());
+            return candidate;
+        }
+    }
+}
+
+fn short_name(mut index: usize) -> String {
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const BASE: usize = 52;
+    if index < BASE {
+        return (ALPHABET[index] as char).to_string();
+    }
+    index -= BASE;
+    if index < BASE * BASE {
+        let first = ALPHABET[index / BASE] as char;
+        let second = ALPHABET[index % BASE] as char;
+        return format!("{first}{second}");
+    }
+    index -= BASE * BASE;
+    let mut chars = Vec::new();
+    loop {
+        chars.push(ALPHABET[index % BASE] as char);
+        index /= BASE;
+        if index == 0 {
+            break;
+        }
+    }
+    while chars.len() < 3 {
+        chars.push('a');
+    }
+    chars.reverse();
+    chars.into_iter().collect()
 }
 
 fn hash64(text: &str, seed: u64) -> u64 {

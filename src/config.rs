@@ -18,6 +18,7 @@ pub struct Config {
     pub wizard: bool,
     pub wizard_end: String,
     pub expand_macros: bool,
+    pub simple_names: bool,
 }
 
 impl Config {
@@ -37,6 +38,7 @@ impl Config {
         let mut wizard = false;
         let mut wizard_end = String::from("END");
         let mut expand_macros = true;
+        let mut simple_names = false;
 
         let mut args = env::args().skip(1).peekable();
         while let Some(arg) = args.next() {
@@ -77,6 +79,7 @@ impl Config {
                     wizard_end = raw;
                     wizard = true;
                 }
+                "--simple-names" => simple_names = true,
                 "--no-expand-macros" => expand_macros = false,
                 _ => return Err(format!("Unknown argument: {arg}\n\n{}", Self::usage())),
             }
@@ -84,6 +87,9 @@ impl Config {
 
         if wizard && input.is_some() {
             return Err("--wizard cannot be used with --input".to_string());
+        }
+        if simple_names && !rename {
+            return Err("--simple-names cannot be used with --no-rename".to_string());
         }
 
         Ok(Self {
@@ -102,6 +108,7 @@ impl Config {
             wizard,
             wizard_end,
             expand_macros,
+            simple_names,
         })
     }
 
@@ -124,6 +131,7 @@ OPTIONS:
   --no-strip-unused-functions  Keep unused function definitions (default strips)
   --no-strip-unused-globals  Keep unused global variables/objects (default strips)
   --no-expand-macros        Skip macro expansion before obfuscation
+  --simple-names            Rename identifiers to 1-2 character names
   --preserve <name>         Preserve an identifier (repeatable)
   --wizard                  Interactive mode: paste code, end with marker line
   --wizard-end <marker>     Marker line to finish wizard input (default: END)

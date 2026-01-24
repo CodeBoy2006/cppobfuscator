@@ -72,3 +72,9 @@
 - **Status:** Completed
 - **Next Steps:** Consider expanding the dependency scan to handle token-paste/stringify if needed.
 - **Context:** Verified with `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf`; `#define endl` no longer appears.
+
+## [2026-01-24 13:41] Simple renaming mode
+- **Changes:** Added `--simple-names` to rename identifiers to 1-2 character names with keyword avoidance.
+- **Status:** Completed
+- **Next Steps:** Consider extending the short-name generator if more than 2,756 identifiers are expected.
+- **Context:** Verified with `cargo run -- -i test.cpp -o /tmp/test_obf.cpp --simple-names` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf`.
