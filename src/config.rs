@@ -11,6 +11,7 @@ pub struct Config {
     pub inline: bool,
     pub constlift: bool,
     pub strip_comments: bool,
+    pub strip_unused_macros: bool,
     pub preserve: Vec<String>,
     pub wizard: bool,
     pub wizard_end: String,
@@ -26,6 +27,7 @@ impl Config {
         let mut inline = true;
         let mut constlift = true;
         let mut strip_comments = true;
+        let mut strip_unused_macros = true;
         let mut preserve = Vec::new();
         let mut wizard = false;
         let mut wizard_end = String::from("END");
@@ -53,6 +55,7 @@ impl Config {
                 "--no-inline" => inline = false,
                 "--no-constlift" => constlift = false,
                 "--keep-comments" => strip_comments = false,
+                "--no-strip-unused-macros" => strip_unused_macros = false,
                 "--preserve" => {
                     let raw = args.next().ok_or("--preserve requires a name")?;
                     preserve.push(raw);
@@ -83,6 +86,7 @@ impl Config {
             inline,
             constlift,
             strip_comments,
+            strip_unused_macros,
             preserve,
             wizard,
             wizard_end,
@@ -104,6 +108,7 @@ OPTIONS:
   --no-inline               Disable inline substitution for simple functions
   --no-constlift            Disable constant expression lifting
   --keep-comments           Preserve comments (default strips)
+  --no-strip-unused-macros  Keep unused #define macros (default strips)
   --preserve <name>         Preserve an identifier (repeatable)
   --wizard                  Interactive mode: paste code, end with marker line
   --wizard-end <marker>     Marker line to finish wizard input (default: END)

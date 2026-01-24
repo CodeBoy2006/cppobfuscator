@@ -13,3 +13,8 @@
 - **Status:** Completed
 - **Next Steps:** Expand declaration patterns if any user-defined identifiers are no longer being renamed.
 - **Context:** Renaming now depends on parser-detected declarations; missing nodes will be left unchanged for safety.
+## [2026-01-24 12:11] Strip Unused Macros
+- **Changes:** Added unused-macro stripping pass for #define lines, plus CLI flag to disable it; wired into obfuscation flow.
+- **Status:** Completed
+- **Next Steps:** Expand preprocessor parsing if macro usage is missed in edge cases.
+- **Context:** Macro removal is conservative and only drops definitions with no detected identifier uses.

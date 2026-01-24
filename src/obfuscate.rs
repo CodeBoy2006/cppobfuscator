@@ -11,6 +11,7 @@ pub struct ObfuscateConfig {
     pub inline: bool,
     pub constlift: bool,
     pub strip_comments: bool,
+    pub strip_unused_macros: bool,
     pub preserve: Vec<String>,
 }
 
@@ -23,6 +24,9 @@ struct SimpleFunction {
 
 pub fn obfuscate(input: &str, config: &ObfuscateConfig) -> String {
     let mut tokens = crate::lexer::tokenize(input);
+    if config.strip_unused_macros {
+        tokens = remove_unused_macros(&tokens);
+    }
     let preserve = build_preserve_set(&tokens, &config.preserve);
 
     if config.inline {
@@ -83,6 +87,177 @@ fn collect_defined_macros(tokens: &[Token]) -> HashSet<String> {
         }
     }
     macros
+}
+
+#[derive(Debug)]
+struct MacroDefinition<'a> {
+    name: &'a str,
+    replacement: &'a str,
+    params: Vec<String>,
+}
+
+fn remove_unused_macros(tokens: &[Token]) -> Vec<Token> {
+    let mut defined = Vec::new();
+    let mut uses: HashSet<String> = HashSet::new();
+
+    for token in tokens {
+        match token.kind {
+            TokenKind::Preprocessor => {
+                if let Some(def) = parse_define_line(&token.text) {
+                    let MacroDefinition {
+                        name,
+                        replacement,
+                        params,
+                    } = def;
+                    defined.push(name.to_string());
+                    for_each_identifier(replacement, |ident| {
+                        if ident != name && !params.iter().any(|param| param == ident) {
+                            uses.insert(ident.to_string());
+                        }
+                    });
+                } else {
+                    for_each_identifier(&token.text, |ident| {
+                        uses.insert(ident.to_string());
+                    });
+                }
+            }
+            TokenKind::Identifier => {
+                uses.insert(token.text.clone());
+            }
+            _ => {}
+        }
+    }
+
+    let unused: HashSet<String> = defined
+        .into_iter()
+        .filter(|name| !uses.contains(name))
+        .collect();
+
+    if unused.is_empty() {
+        return tokens.to_vec();
+    }
+
+    tokens
+        .iter()
+        .filter_map(|token| {
+            if token.kind == TokenKind::Preprocessor {
+                if let Some(def) = parse_define_line(&token.text) {
+                    if unused.contains(def.name) {
+                        return None;
+                    }
+                }
+            }
+            Some(token.clone())
+        })
+        .collect()
+}
+
+fn parse_define_line(text: &str) -> Option<MacroDefinition<'_>> {
+    let mut rest = text.trim_start();
+    if !rest.starts_with('#') {
+        return None;
+    }
+    rest = &rest[1..];
+    rest = rest.trim_start();
+    if !rest.starts_with("define") {
+        return None;
+    }
+    rest = &rest["define".len()..];
+    rest = rest.trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+
+    let bytes = rest.as_bytes();
+    if !is_ident_start_byte(bytes[0]) {
+        return None;
+    }
+    let mut end = 1;
+    while end < bytes.len() && is_ident_char_byte(bytes[end]) {
+        end += 1;
+    }
+    let name = &rest[..end];
+    let mut replacement = &rest[end..];
+    let mut params = Vec::new();
+
+    if replacement.starts_with('(') {
+        if let Some((offset, parsed_params)) = parse_macro_params(replacement) {
+            replacement = &replacement[offset..];
+            params = parsed_params;
+        }
+    }
+
+    Some(MacroDefinition {
+        name,
+        replacement,
+        params,
+    })
+}
+
+fn parse_macro_params(text: &str) -> Option<(usize, Vec<String>)> {
+    let bytes = text.as_bytes();
+    if bytes.first() != Some(&b'(') {
+        return None;
+    }
+    let mut params = Vec::new();
+    let mut i = 1;
+    let mut start: Option<usize> = None;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b')' {
+            if let Some(begin) = start {
+                params.push(text[begin..i].to_string());
+            }
+            return Some((i + 1, params));
+        }
+
+        if let Some(begin) = start {
+            if is_ident_char_byte(b) {
+                i += 1;
+                continue;
+            }
+            params.push(text[begin..i].to_string());
+            start = None;
+            i += 1;
+            continue;
+        }
+
+        if is_ident_start_byte(b) {
+            start = Some(i);
+            i += 1;
+            continue;
+        }
+
+        i += 1;
+    }
+
+    None
+}
+
+fn for_each_identifier<F: FnMut(&str)>(text: &str, mut f: F) {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if is_ident_start_byte(bytes[i]) {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && is_ident_char_byte(bytes[i]) {
+                i += 1;
+            }
+            f(&text[start..i]);
+            continue;
+        }
+        i += 1;
+    }
+}
+
+fn is_ident_start_byte(b: u8) -> bool {
+    matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'_')
+}
+
+fn is_ident_char_byte(b: u8) -> bool {
+    is_ident_start_byte(b) || matches!(b, b'0'..=b'9')
 }
 
 fn default_preserve_set() -> Vec<&'static str> {
