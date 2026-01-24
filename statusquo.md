@@ -30,3 +30,9 @@
 - **Status:** Completed
 - **Next Steps:** Run `./test` if you want to execute the binary.
 - **Context:** Compile used `g++-15 -std=c++17 test.cpp -o test` and succeeded.
+
+## [2026-01-24 12:41] Test obfuscator with test.cpp
+- **Changes:** None; generated obfuscated output at /tmp/test_obf.cpp.
+- **Status:** Completed
+- **Next Steps:** Fix minifier to preserve newline before preprocessor directives, then re-test.
+- **Context:** `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` succeeded, but `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf` failed (stray `#` from `;#define` on line 3).
