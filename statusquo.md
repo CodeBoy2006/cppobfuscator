@@ -18,3 +18,9 @@
 - **Status:** Completed
 - **Next Steps:** Expand preprocessor parsing if macro usage is missed in edge cases.
 - **Context:** Macro removal is conservative and only drops definitions with no detected identifier uses.
+
+## [2026-01-24 12:34] Provide g++ compile command
+- **Changes:** None; provided compile command guidance.
+- **Status:** Completed
+- **Next Steps:** Run `g++ -std=c++17 test.cpp -o test` to verify locally.
+- **Context:** No code changes made; local compile failed due to missing `bits/stdc++.h` with clang-based g++.
