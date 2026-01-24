@@ -66,3 +66,9 @@
 - **Status:** Completed
 - **Next Steps:** Consider extending removal to handle multi-declarator statements if needed.
 - **Context:** Verified with `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf`.
+
+## [2026-01-24 13:35] Remove unused macros with dependency scan
+- **Changes:** Updated macro pruning to remove macros only referenced by other unused macros.
+- **Status:** Completed
+- **Next Steps:** Consider expanding the dependency scan to handle token-paste/stringify if needed.
+- **Context:** Verified with `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf`; `#define endl` no longer appears.

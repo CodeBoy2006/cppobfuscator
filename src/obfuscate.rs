@@ -110,7 +110,8 @@ struct MacroDefinition<'a> {
 }
 
 fn remove_unused_macros(tokens: &[Token]) -> Vec<Token> {
-    let mut defined = Vec::new();
+    let mut defined: HashSet<String> = HashSet::new();
+    let mut deps: HashMap<String, HashSet<String>> = HashMap::new();
     let mut uses: HashSet<String> = HashSet::new();
 
     for token in tokens {
@@ -122,12 +123,15 @@ fn remove_unused_macros(tokens: &[Token]) -> Vec<Token> {
                         replacement,
                         params,
                     } = def;
-                    defined.push(name.to_string());
+                    let name = name.to_string();
+                    defined.insert(name.clone());
+                    let mut local_deps = HashSet::new();
                     for_each_identifier(replacement, |ident| {
                         if ident != name && !params.iter().any(|param| param == ident) {
-                            uses.insert(ident.to_string());
+                            local_deps.insert(ident.to_string());
                         }
                     });
+                    deps.insert(name, local_deps);
                 } else {
                     for_each_identifier(&token.text, |ident| {
                         uses.insert(ident.to_string());
@@ -141,9 +145,28 @@ fn remove_unused_macros(tokens: &[Token]) -> Vec<Token> {
         }
     }
 
+    let mut reachable: HashSet<String> = HashSet::new();
+    let mut stack: Vec<String> = uses
+        .into_iter()
+        .filter(|name| defined.contains(name))
+        .collect();
+
+    while let Some(name) = stack.pop() {
+        if !reachable.insert(name.clone()) {
+            continue;
+        }
+        if let Some(local_deps) = deps.get(&name) {
+            for dep in local_deps {
+                if defined.contains(dep) && !reachable.contains(dep) {
+                    stack.push(dep.clone());
+                }
+            }
+        }
+    }
+
     let unused: HashSet<String> = defined
         .into_iter()
-        .filter(|name| !uses.contains(name))
+        .filter(|name| !reachable.contains(name))
         .collect();
 
     if unused.is_empty() {
