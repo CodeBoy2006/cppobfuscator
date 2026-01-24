@@ -54,3 +54,9 @@
 - **Status:** Completed
 - **Next Steps:** Consider documenting macro expansion behavior for header-defined macros.
 - **Context:** Verified with `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf`.
+
+## [2026-01-24 13:16] Embed macro expansion
+- **Changes:** Replaced g++-based macro expansion with an internal token-based expander and kept includes intact.
+- **Status:** Completed
+- **Next Steps:** Consider adding tests for variadic or token-paste macros that are intentionally skipped.
+- **Context:** Verified with `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf`.
