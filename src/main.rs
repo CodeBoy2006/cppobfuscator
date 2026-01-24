@@ -4,6 +4,7 @@ mod obfuscate;
 mod semantics;
 
 use std::io::{self, BufRead, Read, Write};
+use std::process::{Command, Stdio};
 
 use config::Config;
 use obfuscate::{obfuscate, ObfuscateConfig};
@@ -21,7 +22,7 @@ fn main() {
         }
     };
 
-    let input = if config.wizard {
+    let mut input = if config.wizard {
         read_wizard_input(&config.wizard_end)
     } else if let Some(path) = config.input.as_ref() {
         std::fs::read_to_string(path).unwrap_or_else(|err| {
@@ -36,6 +37,13 @@ fn main() {
         }
         buffer
     };
+
+    if config.expand_macros {
+        input = expand_macros(&input).unwrap_or_else(|err| {
+            eprintln!("{err}");
+            std::process::exit(1);
+        });
+    }
 
     let obfuscate_config = ObfuscateConfig {
         seed: config.seed,
@@ -91,4 +99,58 @@ fn read_wizard_input(marker: &str) -> String {
     }
 
     input
+}
+
+fn expand_macros(input: &str) -> Result<String, String> {
+    let mut includes = Vec::new();
+    let mut pre_input = String::new();
+
+    for line in input.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("#include") {
+            let marker = format!("/*__CPP_OBFUSCATOR_INCLUDE_{}__*/", includes.len());
+            includes.push(format!("{line}\n"));
+            pre_input.push_str(&marker);
+            pre_input.push('\n');
+        } else {
+            pre_input.push_str(line);
+            pre_input.push('\n');
+        }
+    }
+
+    let mut child = Command::new("g++-15")
+        .args(["-E", "-P", "-CC", "-x", "c++", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("Failed to run g++-15 for macro expansion: {err}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(pre_input.as_bytes())
+            .map_err(|err| format!("Failed to send input to g++-15: {err}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|err| format!("Failed to read g++-15 output: {err}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "g++-15 macro expansion failed: {}",
+            stderr.trim()
+        ));
+    }
+
+    let mut expanded = String::from_utf8(output.stdout)
+        .map_err(|err| format!("g++-15 output was not valid UTF-8: {err}"))?;
+
+    for (idx, include) in includes.iter().enumerate() {
+        let marker = format!("/*__CPP_OBFUSCATOR_INCLUDE_{}__*/", idx);
+        expanded = expanded.replace(&marker, include);
+    }
+
+    Ok(expanded)
 }

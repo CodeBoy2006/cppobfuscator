@@ -16,6 +16,7 @@ pub struct Config {
     pub preserve: Vec<String>,
     pub wizard: bool,
     pub wizard_end: String,
+    pub expand_macros: bool,
 }
 
 impl Config {
@@ -33,6 +34,7 @@ impl Config {
         let mut preserve = Vec::new();
         let mut wizard = false;
         let mut wizard_end = String::from("END");
+        let mut expand_macros = true;
 
         let mut args = env::args().skip(1).peekable();
         while let Some(arg) = args.next() {
@@ -72,6 +74,7 @@ impl Config {
                     wizard_end = raw;
                     wizard = true;
                 }
+                "--no-expand-macros" => expand_macros = false,
                 _ => return Err(format!("Unknown argument: {arg}\n\n{}", Self::usage())),
             }
         }
@@ -94,6 +97,7 @@ impl Config {
             preserve,
             wizard,
             wizard_end,
+            expand_macros,
         })
     }
 
@@ -114,6 +118,7 @@ OPTIONS:
   --keep-comments           Preserve comments (default strips)
   --no-strip-unused-macros  Keep unused #define macros (default strips)
   --no-strip-unused-functions  Keep unused function definitions (default strips)
+  --no-expand-macros        Skip macro expansion before obfuscation
   --preserve <name>         Preserve an identifier (repeatable)
   --wizard                  Interactive mode: paste code, end with marker line
   --wizard-end <marker>     Marker line to finish wizard input (default: END)

@@ -48,3 +48,9 @@
 - **Status:** Completed
 - **Next Steps:** Consider adding regression tests for function stripping edge cases.
 - **Context:** Verified with `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf`.
+
+## [2026-01-24 13:05] Expand macros before obfuscation
+- **Changes:** Added macro expansion using g++-15 with include markers and new `--no-expand-macros` flag.
+- **Status:** Completed
+- **Next Steps:** Consider documenting macro expansion behavior for header-defined macros.
+- **Context:** Verified with `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf`.
