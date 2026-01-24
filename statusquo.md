@@ -78,3 +78,9 @@
 - **Status:** Completed
 - **Next Steps:** Consider extending the short-name generator if more than 2,756 identifiers are expected.
 - **Context:** Verified with `cargo run -- -i test.cpp -o /tmp/test_obf.cpp --simple-names` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf`.
+
+## [2026-01-24 13:49] Improve constant obfuscation
+- **Changes:** Replaced trivial XOR-cancel constant lifting with a bitwise NOT/XOR identity using two distinct keys.
+- **Status:** Completed
+- **Next Steps:** Consider adding unit tests for constlift patterns.
+- **Context:** Verified with `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf`.

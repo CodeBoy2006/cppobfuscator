@@ -922,11 +922,25 @@ fn apply_constlift(tokens: &mut [Token], seed: u64) {
     for token in tokens.iter_mut() {
         if token.kind == TokenKind::Number {
             if is_integer_literal(&token.text) {
-                let mut key = (hash64(&token.text, seed) ^ 0xA5A5A5A5A5A5A5A5) & 0xFFFF;
-                if key == 0 {
-                    key = 0x5A5A;
+                let hash = hash64(&token.text, seed);
+                let mut key1 = (hash as u32) ^ 0xA5A5A5A5;
+                let mut key2 = ((hash >> 32) as u32) ^ 0x5A5A5A5A;
+                if key1 == 0 {
+                    key1 = 0xA3C59AC3;
                 }
-                token.text = format!("(({})^0x{:x}^0x{:x})", token.text, key, key);
+                if key2 == 0 {
+                    key2 = 0x1F123BB5;
+                }
+                if key1 == key2 {
+                    key2 = key2.wrapping_add(0x9E3779B9);
+                    if key2 == 0 {
+                        key2 = 0x7F4A7C15;
+                    }
+                }
+                token.text = format!(
+                    "((~(~({}^0x{:x})^0x{:x})^0x{:x})^0x{:x})",
+                    token.text, key1, key2, key2, key1
+                );
             }
         }
     }
