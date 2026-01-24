@@ -96,3 +96,9 @@
 - **Status:** Completed
 - **Next Steps:** None.
 - **Context:** Verified wizard flow via stdin pipe and compiled output.
+
+## [2026-01-24 14:06] Add bilingual README
+- **Changes:** Added English README with link to Chinese README and documented options/usage.
+- **Status:** Completed
+- **Next Steps:** None.
+- **Context:** New README.md and README.zh.md.
