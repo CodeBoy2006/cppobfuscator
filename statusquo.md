@@ -24,3 +24,9 @@
 - **Status:** Completed
 - **Next Steps:** Run `g++ -std=c++17 test.cpp -o test` to verify locally.
 - **Context:** No code changes made; local compile failed due to missing `bits/stdc++.h` with clang-based g++.
+
+## [2026-01-24 12:38] Compile with g++-15
+- **Changes:** None; compiled `test.cpp` with g++-15.
+- **Status:** Completed
+- **Next Steps:** Run `./test` if you want to execute the binary.
+- **Context:** Compile used `g++-15 -std=c++17 test.cpp -o test` and succeeded.
