@@ -91,6 +91,9 @@ impl Config {
         if simple_names && !rename {
             return Err("--simple-names cannot be used with --no-rename".to_string());
         }
+        if simple_names {
+            constlift = false;
+        }
 
         Ok(Self {
             input,
@@ -131,7 +134,7 @@ OPTIONS:
   --no-strip-unused-functions  Keep unused function definitions (default strips)
   --no-strip-unused-globals  Keep unused global variables/objects (default strips)
   --no-expand-macros        Skip macro expansion before obfuscation
-  --simple-names            Rename identifiers to 1-2 character names
+  --simple-names            Rename identifiers to 1-2 character names (disables constlift)
   --preserve <name>         Preserve an identifier (repeatable)
   --wizard                  Interactive mode: paste code, end with marker line
   --wizard-end <marker>     Marker line to finish wizard input (default: END)
