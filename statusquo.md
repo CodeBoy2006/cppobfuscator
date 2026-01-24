@@ -102,3 +102,9 @@
 - **Status:** Completed
 - **Next Steps:** None.
 - **Context:** New README.md and README.zh.md.
+
+## [2026-01-24 14:21] Recursive constant obfuscation
+- **Changes:** Replaced constlift with recursive arithmetic decomposition (add/sub/xor/shift + leaf variations).
+- **Status:** Completed
+- **Next Steps:** Consider adding tests for suffix parsing and large literals.
+- **Context:** Verified with `cargo run -- -i test.cpp -o /tmp/test_obf.cpp` and `g++-15 -std=c++17 /tmp/test_obf.cpp -o /tmp/test_obf`.

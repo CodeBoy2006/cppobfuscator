@@ -921,51 +921,181 @@ fn substitute_expr(def: &SimpleFunction, args: &[Vec<Token>]) -> Vec<Token> {
 fn apply_constlift(tokens: &mut [Token], seed: u64) {
     for token in tokens.iter_mut() {
         if token.kind == TokenKind::Number {
-            if is_integer_literal(&token.text) {
-                let hash = hash64(&token.text, seed);
-                let mut key1 = (hash as u32) ^ 0xA5A5A5A5;
-                let mut key2 = ((hash >> 32) as u32) ^ 0x5A5A5A5A;
-                if key1 == 0 {
-                    key1 = 0xA3C59AC3;
-                }
-                if key2 == 0 {
-                    key2 = 0x1F123BB5;
-                }
-                if key1 == key2 {
-                    key2 = key2.wrapping_add(0x9E3779B9);
-                    if key2 == 0 {
-                        key2 = 0x7F4A7C15;
-                    }
-                }
-                token.text = format!(
-                    "((~(~({}^0x{:x})^0x{:x})^0x{:x})^0x{:x})",
-                    token.text, key1, key2, key2, key1
-                );
+            if let Some((value, suffix)) = parse_integer_literal(&token.text) {
+                let mut rng = ConstRng::new(hash64(&token.text, seed));
+                let depth = choose_const_depth(value, &mut rng);
+                token.text = obfuscate_const(value, depth, &mut rng, &suffix);
             }
         }
     }
 }
 
-fn is_integer_literal(text: &str) -> bool {
-    if text.is_empty() {
-        return false;
+fn parse_integer_literal(text: &str) -> Option<(u64, String)> {
+    if text.is_empty() || text.starts_with('.') {
+        return None;
     }
-    if text.starts_with('.') {
-        return false;
+    if text.chars().any(|ch| matches!(ch, '.' | 'e' | 'E' | 'p' | 'P')) {
+        return None;
     }
-    let mut has_digit = false;
-    for ch in text.chars() {
-        if ch.is_ascii_digit() {
-            has_digit = true;
+
+    let mut suffix_start = text.len();
+    let bytes = text.as_bytes();
+    while suffix_start > 0 {
+        let b = bytes[suffix_start - 1];
+        if matches!(b, b'u' | b'U' | b'l' | b'L') {
+            suffix_start -= 1;
+        } else {
+            break;
         }
-        if matches!(ch, '.' | 'e' | 'E' | 'p' | 'P') {
-            return false;
+    }
+    let (number, suffix) = text.split_at(suffix_start);
+    if suffix.contains('f') || suffix.contains('F') {
+        return None;
+    }
+
+    let num = number.replace('_', "");
+    let (base, digits) = if num.starts_with("0x") || num.starts_with("0X") {
+        (16, &num[2..])
+    } else if num.starts_with("0b") || num.starts_with("0B") {
+        (2, &num[2..])
+    } else if num.starts_with('0') && num.len() > 1 {
+        (8, &num[1..])
+    } else {
+        (10, num.as_str())
+    };
+
+    if digits.is_empty() {
+        return Some((0, suffix.to_string()));
+    }
+
+    let value = u64::from_str_radix(digits, base).ok()?;
+    Some((value, suffix.to_string()))
+}
+
+fn choose_const_depth(value: u64, rng: &mut ConstRng) -> u8 {
+    if value <= 3 {
+        return 1;
+    }
+    let base: u8 = if value <= 0xFF { 2 } else { 3 };
+    let tweak = (rng.next_u64() & 1) as u8;
+    base.saturating_sub(tweak).max(1)
+}
+
+fn obfuscate_const(value: u64, depth: u8, rng: &mut ConstRng, suffix: &str) -> String {
+    if depth == 0 {
+        return leaf_expr(value, rng, suffix);
+    }
+
+    let mut ops = Vec::new();
+    if value > 0 {
+        ops.push(ConstOp::Add);
+    }
+    if value < u64::MAX {
+        ops.push(ConstOp::Sub);
+    }
+    ops.push(ConstOp::Xor);
+    if value % 2 == 0 {
+        ops.push(ConstOp::Shift);
+    }
+
+    let op = ops[(rng.next_u64() as usize) % ops.len()];
+    let mut expr = match op {
+        ConstOp::Add => {
+            let r = bounded_rand(rng, value.min(0xFFFF).max(1));
+            let left = obfuscate_const(value - r, depth - 1, rng, suffix);
+            let right = obfuscate_const(r, depth - 1, rng, suffix);
+            format!("({left}+{right})")
+        }
+        ConstOp::Sub => {
+            let max_r = (u64::MAX - value).min(0xFFFF).max(1);
+            let r = bounded_rand(rng, max_r);
+            let left = obfuscate_const(value.wrapping_add(r), depth - 1, rng, suffix);
+            let right = obfuscate_const(r, depth - 1, rng, suffix);
+            format!("({left}-{right})")
+        }
+        ConstOp::Xor => {
+            let r = bounded_rand(rng, 0xFFFF).max(1);
+            let left = obfuscate_const(value ^ r, depth - 1, rng, suffix);
+            let right = obfuscate_const(r, depth - 1, rng, suffix);
+            format!("({left}^{right})")
+        }
+        ConstOp::Shift => {
+            let shift = ((rng.next_u64() % 3) + 1) as u32;
+            if shift >= 64 || (value >> shift) == 0 {
+                leaf_expr(value, rng, suffix)
+            } else {
+                let left = obfuscate_const(value >> shift, depth - 1, rng, suffix);
+                format!("({left}<<{shift})")
+            }
+        }
+    };
+
+    if (rng.next_u64() & 1) == 0 {
+        expr = format!("(~(~{expr}))");
+    }
+    expr
+}
+
+fn bounded_rand(rng: &mut ConstRng, max_inclusive: u64) -> u64 {
+    if max_inclusive <= 1 {
+        return 1;
+    }
+    (rng.next_u64() % max_inclusive) + 1
+}
+
+fn leaf_expr(value: u64, rng: &mut ConstRng, suffix: &str) -> String {
+    let mut choices = Vec::new();
+    choices.push(format!("{}{}", value, suffix));
+    choices.push(format!("0x{:x}{}", value, suffix));
+    choices.push(format!("0{:o}{}", value, suffix));
+
+    if value == 0 {
+        choices.push("(!1)".to_string());
+        choices.push("(sizeof(char)-sizeof(char))".to_string());
+    }
+    if value == 1 {
+        choices.push("(!0)".to_string());
+        choices.push("sizeof(char)".to_string());
+    }
+    if (2..=32).contains(&value) {
+        choices.push(format!("sizeof(char[{}])", value));
+    }
+    if (33..=126).contains(&value) {
+        let ch = value as u8 as char;
+        if ch != '\\' && ch != '\'' {
+            choices.push(format!("'{}'", ch));
         }
     }
-    if text.ends_with('f') || text.ends_with('F') {
-        return false;
+
+    choices[(rng.next_u64() as usize) % choices.len()].clone()
+}
+
+#[derive(Copy, Clone)]
+enum ConstOp {
+    Add,
+    Sub,
+    Xor,
+    Shift,
+}
+
+struct ConstRng {
+    state: u64,
+}
+
+impl ConstRng {
+    fn new(seed: u64) -> Self {
+        let state = if seed == 0 { 0x9E3779B97F4A7C15 } else { seed };
+        Self { state }
     }
-    has_digit
+
+    fn next_u64(&mut self) -> u64 {
+        let mut x = self.state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.state = x;
+        x
+    }
 }
 
 fn render_minified(tokens: &[Token], strip_comments: bool) -> String {
