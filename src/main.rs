@@ -1,6 +1,7 @@
 mod config;
 mod lexer;
 mod obfuscate;
+mod semantics;
 
 use std::io::{self, BufRead, Read, Write};
 

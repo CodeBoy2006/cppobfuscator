@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::lexer::{Token, TokenKind};
+use crate::semantics;
 
 #[derive(Debug, Clone)]
 pub struct ObfuscateConfig {
@@ -32,7 +33,8 @@ pub fn obfuscate(input: &str, config: &ObfuscateConfig) -> String {
     }
 
     if config.rename {
-        apply_renames(&mut tokens, config.seed, &preserve);
+        let declared = semantics::collect_declared_identifiers(input);
+        apply_renames(&mut tokens, config.seed, &preserve, declared.as_ref());
     }
 
     if config.constlift {
@@ -230,14 +232,19 @@ fn default_preserve_set() -> Vec<&'static str> {
     ]
 }
 
-fn apply_renames(tokens: &mut [Token], seed: u64, preserve: &HashSet<String>) {
+fn apply_renames(
+    tokens: &mut [Token],
+    seed: u64,
+    preserve: &HashSet<String>,
+    declared: Option<&HashSet<String>>,
+) {
     let mut identifiers = BTreeSet::new();
     let mut existing = HashSet::new();
 
     for token in tokens.iter() {
         if token.kind == TokenKind::Identifier {
             existing.insert(token.text.clone());
-            if should_rename(&token.text, preserve) {
+            if should_rename(&token.text, preserve, declared) {
                 identifiers.insert(token.text.clone());
             }
         }
@@ -261,7 +268,12 @@ fn apply_renames(tokens: &mut [Token], seed: u64, preserve: &HashSet<String>) {
     }
 }
 
-fn should_rename(name: &str, preserve: &HashSet<String>) -> bool {
+fn should_rename(name: &str, preserve: &HashSet<String>, declared: Option<&HashSet<String>>) -> bool {
+    if let Some(declared) = declared {
+        if !declared.contains(name) {
+            return false;
+        }
+    }
     if preserve.contains(name) {
         return false;
     }
