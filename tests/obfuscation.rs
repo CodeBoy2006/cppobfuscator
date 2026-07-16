@@ -37,8 +37,12 @@ int main() {
 
     let output = obfuscate(source, &Options::default()).unwrap();
 
-    assert!(output.contains("LOOP(indexValue"));
-    assert!(output.contains("helperValue"));
+    assert!(!output.contains("#define LOOP"));
+    assert!(!output.contains("#define APPLY"));
+    assert!(!output.contains("LOOP("));
+    assert!(!output.contains("APPLY("));
+    assert!(!output.contains("helperValue"));
+    assert!(output.contains("for(int"));
     assert!(output.contains("memberValue"));
     assert!(output.contains("getValue"));
     for renamed in [
@@ -134,7 +138,8 @@ int main() {
 
     assert!(output.contains("1'000"));
     assert!(output.contains("2'000_score"));
-    assert!(output.contains("\\\n"));
+    assert!(!output.contains("#define TWICE"));
+    assert!(!output.contains("TWICE"));
     assert!(output.contains("// not a comment /* still text */"));
     assert!(output.contains("\"你好\""));
     for renamed in ["unicodeValue", "resultValue", "rawValue", "textValue"] {
@@ -170,10 +175,80 @@ fn layout_and_comment_options_are_independent() {
 
 #[test]
 fn rejects_identifier_synthesizing_macros() {
-    let source = "#define JOIN(a,b) a ## b\nint main(){return 0;}\n";
+    let source = "#define JOIN(a,b) a ## b\nint main(){return JOIN(he,llo);}\n";
     let error = obfuscate(source, &Options::default()).unwrap_err();
 
     assert!(matches!(error, ObfuscationError::Unsupported(_)));
+}
+
+#[test]
+fn expands_local_macros_and_simplifies_before_symbol_analysis() {
+    let source = r#"
+#define LIMIT 3
+#define LOOP(i,n) for(int i=0;i<(n);++i)
+#define ADD(a,b) ((a)+(b))
+int main() {
+    ;;
+    int totalValue = 0;
+    LOOP(indexValue, LIMIT) totalValue = ADD(totalValue, indexValue);
+    if (false) totalValue = 100;
+    return totalValue;
+    totalValue++;
+}
+"#;
+    let output = obfuscate(
+        source,
+        &Options {
+            profile: Profile::Symbols,
+            compact: false,
+            strip_comments: false,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+
+    for removed in [
+        "#define",
+        "LIMIT",
+        "LOOP(",
+        "ADD(",
+        "if (false)",
+        "totalValue++",
+        "totalValue",
+        "indexValue",
+    ] {
+        assert!(!output.contains(removed), "{removed} was not removed");
+    }
+    assert!(output.contains("for(int"));
+    assert_eq!(
+        source.bytes().filter(|byte| *byte == b'\n').count(),
+        output.bytes().filter(|byte| *byte == b'\n').count()
+    );
+}
+
+#[test]
+fn preserves_macros_with_preprocessor_dependencies() {
+    let source = r#"
+#define FEATURE_FLAG 1
+#if FEATURE_FLAG
+int helperValue() { return FEATURE_FLAG; }
+#endif
+int main() { return helperValue(); }
+"#;
+    let output = obfuscate(
+        source,
+        &Options {
+            profile: Profile::Symbols,
+            compact: false,
+            strip_comments: false,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+
+    assert!(output.contains("#define FEATURE_FLAG 1"));
+    assert!(output.contains("#if FEATURE_FLAG"));
+    assert!(output.contains("return FEATURE_FLAG"));
 }
 
 #[test]

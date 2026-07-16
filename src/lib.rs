@@ -2,8 +2,10 @@ mod compact;
 mod constants;
 mod integer;
 mod lexical;
+mod preprocessor;
 mod random;
 mod rewrite;
+mod simplify;
 mod symbols;
 mod syntax;
 
@@ -77,7 +79,7 @@ impl Default for Options {
 pub enum ObfuscationError {
     /// Tree-sitter could not be initialized or did not return a syntax tree.
     ParserUnavailable,
-    /// The input contains a syntax error that cannot be attributed to a supported statement macro.
+    /// The normalized input contains a syntax error that cannot be handled conservatively.
     Syntax {
         /// One-based source line.
         line: usize,
@@ -112,15 +114,18 @@ impl StdError for ObfuscationError {}
 
 /// Obfuscates one UTF-8 C++ translation unit.
 ///
-/// The source is parsed before each phase. Identifier edits use Tree-sitter byte
-/// ranges. The arithmetic-constant phase validates each intentional expression
-/// replacement before establishing the structure required by later phases.
+/// Source-local macros are expanded and the resulting AST is simplified before
+/// symbol analysis. Every later phase reparses its output. Identifier edits use
+/// Tree-sitter byte ranges, while intentional arithmetic expression replacements
+/// establish the structure required by the lexical and layout phases.
 pub fn obfuscate(source: &str, options: &Options) -> Result<String, ObfuscationError> {
-    let original_tree = syntax::parse(source)?;
+    let expanded = preprocessor::expand_local_macros(source)?;
+    let simplified = simplify::simplify(&expanded)?;
+    let original_tree = syntax::parse(&simplified)?;
     let original_signature = syntax::signature(original_tree.root_node());
 
-    let edits = symbols::rename_edits(source, original_tree.root_node(), options)?;
-    let renamed = rewrite::apply(source, &edits)?;
+    let edits = symbols::rename_edits(&simplified, original_tree.root_node(), options)?;
+    let renamed = rewrite::apply(&simplified, &edits)?;
     let renamed_tree = syntax::parse(&renamed)?;
     syntax::ensure_same_structure(
         &original_signature,
@@ -187,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_statement_macros_without_source_semicolons() {
+    fn expands_statement_macros_before_parsing_the_body() {
         let source = r#"#define LOOP(i,n) for(int i=0;i<(n);++i)
 int main(){int sum=0;LOOP(index,3){sum+=index;}return sum;}
 "#;
@@ -200,8 +205,11 @@ int main(){int sum=0;LOOP(index,3){sum+=index;}return sum;}
         )
         .unwrap();
 
-        assert!(output.contains("LOOP(index,3)"));
+        assert!(!output.contains("#define LOOP"));
+        assert!(!output.contains("LOOP("));
+        assert!(output.contains("for(int"));
         assert!(!output.contains("sum"));
+        assert!(!output.contains("index"));
     }
 
     #[test]
@@ -215,13 +223,18 @@ int main(){EXPR(1) {return 0;}}
     }
 
     #[test]
-    fn preserves_multiline_macro_continuations() {
+    fn expands_multiline_macros_and_preserves_physical_lines() {
         let source =
             "#define TWICE(x) \\\n ((x)+(x))\nint main(){int value=2;return TWICE(value);}\n";
         let output = obfuscate(source, &Options::default()).unwrap();
 
-        assert!(output.contains("\\\n"));
-        assert!(output.contains("TWICE"));
+        assert!(!output.contains("#define TWICE"));
+        assert!(!output.contains("TWICE"));
+        assert!(output.contains("+"));
         assert!(!output.contains("value"));
+        assert_eq!(
+            source.bytes().filter(|byte| *byte == b'\n').count(),
+            output.bytes().filter(|byte| *byte == b'\n').count()
+        );
     }
 }

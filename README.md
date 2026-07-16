@@ -4,15 +4,16 @@ English | [中文](README.zh.md)
 
 `cppobfuscator` is a low-overhead C++ source obfuscator for single-file contest
 programs. It combines Tree-sitter scope analysis, AST byte-range rewrites, and
-compile-time lexical transformations. It does not expand headers or macros and
-does not use global text replacement.
+compile-time lexical transformations. Before obfuscation it expands supported
+source-local macros and simplifies AST-proven redundant code. It does not expand
+included headers, invoke a compiler preprocessor, or use global text replacement.
 
 > Use it only when contest and platform rules permit source transformation.
 > Always compile and test the generated file with the submission toolchain.
 
 ## Profiles
 
-`0.3` provides three deterministic profiles:
+`0.4` provides three deterministic profiles:
 
 | Profile | Transformations |
 | --- | --- |
@@ -28,20 +29,49 @@ and after maximum transformation.
 
 ## Pipeline
 
-1. Parse the UTF-8 translation unit with `tree-sitter-cpp`.
-2. Collect source identifiers, macro dependencies, linkage constraints, and
-   C++ lookup hazards.
-3. Build lexical scopes, declaration points, overload groups, template
+1. Scan preprocessing directives and recursively expand eligible source-local
+   object-like and function-like macros using definition-order-aware token rules.
+2. Remove expanded and unused local macro definitions while preserving every
+   physical newline.
+3. Parse the normalized UTF-8 translation unit with `tree-sitter-cpp`.
+4. Remove AST-proven empty statements, literal constant branches, false loops,
+   and unreachable runtime tails, then reparse.
+5. Collect source identifiers, remaining macro dependencies, linkage
+   constraints, and C++ lookup hazards.
+6. Build lexical scopes, declaration points, overload groups, template
    parameters, labels, and identifier references.
-4. Apply non-overlapping symbol edits and reparse.
-5. Replace eligible maximum-profile integer leaves with tracked arithmetic
+7. Apply non-overlapping symbol edits and reparse.
+8. Replace eligible maximum-profile integer leaves with tracked arithmetic
    expression subtrees, verify each generated decoder, and reparse.
-6. Establish the intentional post-constant AST as the validation baseline,
+9. Establish the intentional post-constant AST as the validation baseline,
    then rewrite safe literal spellings and expression operators.
-7. Remove source comments and render compact layout while preserving every
+10. Remove source comments and render compact layout while preserving every
    physical newline and macro continuation.
-8. Reparse and require the normalized non-comment AST structure to match the
+11. Reparse and require the normalized non-comment AST structure to match the
    validated post-constant baseline.
+
+## Pre-obfuscation normalization
+
+- A macro is eligible for expansion only when it has one unconditional local
+  definition, is not redefined or undefined, is not referenced by another
+  preprocessing directive, and is defined after the last include.
+- Object-like and fixed-arity function-like macros are recursively expanded
+  using the definitions visible at each invocation. Strings, character
+  literals, raw strings, comments, and preprocessing-number tokens are never
+  scanned as macro identifiers.
+- Invocation arguments follow preprocessing parenthesis rules. Wrong arity,
+  recursion that leaves a macro token, variadic macros, multiline replacement
+  tokens, and unsupported special operators cause the relevant definitions to
+  remain in place.
+- Unused local macros are removed even when they use unsupported `#` or `##`
+  operators. A used stringifying or token-pasting macro remains rejected by the
+  symbol phase because it can expose or synthesize identifier spellings.
+- Simplification folds literal `if` conditions and `while(false)`, removes empty
+  statements in blocks, and drops runtime statements after unconditional
+  `return`, `co_return`, `break`, `continue`, or `goto`.
+- Simplification does not cross labels, `case` entries, or preprocessing nodes.
+  It does not perform type-driven dead declaration elimination or function
+  inlining.
 
 ## Symbol obfuscation
 
@@ -107,17 +137,15 @@ reduce the generated expressions.
 
 ## Macro boundaries
 
-- Macro replacement text is never rewritten or expanded.
-- Function-like statement macros beginning with `for`, `if`, `while`, or
-  `switch` are accepted when Tree-sitter reports only their synthetic missing
-  semicolon.
-- Backslash-newline continuations are preserved.
-- `##` and `%:%:` token-pasting macros are rejected.
-- `#` and `%:` stringifying function macros are rejected because renaming an
-  argument can change the resulting string.
+- Included-header definitions are not visible and headers are never expanded.
+- Conditional, redefined, undefined, variadic, include-sensitive, and
+  preprocessing-directive-dependent macros remain untouched.
+- Surviving function-like statement macros beginning with `for`, `if`, `while`,
+  or `switch` retain the existing Tree-sitter missing-semicolon allowance.
+- Used `##`/`%:%:` token-pasting and `#`/`%:` stringifying macros are rejected.
+- Backslash continuations and all physical line counts remain stable.
 
-Definitions from included headers are not visible. Header-provided
-stringification, token pasting, unusual lowercase macros, compiler extensions,
+Header-provided macros, full conditional preprocessing, compiler extensions,
 and full ADL/type lookup remain outside the model.
 
 ## CLI

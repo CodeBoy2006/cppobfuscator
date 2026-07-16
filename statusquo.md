@@ -33,3 +33,9 @@
 - **Status:** Completed
 - **Next Steps:** None.
 - **Context:** The 2,266-byte artifact compiles as C++14 with `g++-15` and Apple Clang. Prepared and obfuscated binaries from both compilers produced byte-identical output for 401 deterministic random trees.
+
+## [2026-07-16 22:05] Macro Expansion and AST Simplification
+- **Changes:** Added definition-order-aware source-local object/function macro expansion, unused macro removal, residual dependency preservation, exact physical-line retention, and Tree-sitter simplification for empty statements, literal branches, false loops, and unreachable runtime tails. Removed the old nested macro scanner and the redundant prepared T708557 input, regenerated the example directly from the original source, and updated the crate to `0.4.0` with bilingual documentation and expanded regression coverage.
+- **Status:** Completed
+- **Next Steps:** None.
+- **Context:** Sixty Rust tests, Clippy with warnings denied, Rustdoc with warnings denied, and the release build pass. Portable original/maximum T708557 binaries built with GCC and Clang produced byte-identical 748,485-byte output across 401 random trees containing 42,472 vertices; a separate nested/empty/token-boundary/`__LINE__` macro suite also matched under Clang.

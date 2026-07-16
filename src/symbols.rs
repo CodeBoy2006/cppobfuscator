@@ -4,8 +4,8 @@ use tree_sitter::Node;
 
 mod declarator;
 mod names;
-mod preprocessor;
 
+use crate::preprocessor::{has_stringification, has_token_paste};
 use crate::rewrite::TextEdit;
 use crate::{ObfuscationError, Options};
 use declarator::{
@@ -13,7 +13,6 @@ use declarator::{
     declarator_name_is_qualified, find_descendant, innermost_function_declarator,
 };
 use names::{NameGenerator, is_reserved_identifier, scan_identifiers};
-use preprocessor::{has_stringification, has_token_paste};
 
 type ScopeId = usize;
 type SymbolId = usize;
@@ -1403,14 +1402,16 @@ mod tests {
         )
         .unwrap();
 
-        assert!(output.contains("helper"));
+        assert!(!output.contains("#define CALL"));
+        assert!(!output.contains("CALL("));
+        assert!(!output.contains("helper"));
         assert!(!output.contains("int x"));
     }
 
     #[test]
     fn rejects_identifier_token_pasting() {
         let error = obfuscate(
-            "#define JOIN(a,b) a ## b\nint main(){return 0;}",
+            "#define JOIN(a,b) a ## b\nint main(){return JOIN(he,llo);}",
             &Options::default(),
         )
         .unwrap_err();
@@ -1426,7 +1427,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(output.contains("\"##\""));
+        assert!(!output.contains("#define HASH_TEXT"));
+        assert!(!output.contains("HASH_TEXT"));
+        assert!(output.contains("\\043"));
+        assert!(output.contains('#'));
     }
 
     #[test]
