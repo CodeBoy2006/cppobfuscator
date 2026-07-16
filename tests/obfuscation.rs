@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use cppobfuscator::{ObfuscationError, Options, obfuscate};
+use cppobfuscator::{ObfuscationError, Options, Profile, obfuscate};
 
 #[test]
 fn transforms_contest_style_cpp_with_scoped_symbols() {
@@ -121,7 +121,14 @@ int main() {
 }
 "#;
 
-    let output = obfuscate(source, &Options::default()).unwrap();
+    let output = obfuscate(
+        source,
+        &Options {
+            profile: cppobfuscator::Profile::Symbols,
+            ..Options::default()
+        },
+    )
+    .unwrap();
 
     assert!(output.contains("1'000"));
     assert!(output.contains("2'000_score"));
@@ -165,4 +172,207 @@ fn rejects_identifier_synthesizing_macros() {
     let error = obfuscate(source, &Options::default()).unwrap_err();
 
     assert!(matches!(error, ObfuscationError::Unsupported(_)));
+}
+
+#[test]
+fn renames_template_parameters_and_labels() {
+    let source = r#"
+#include <vector>
+template <class TypeValue, int SizeValue, template <class> class ContainerValue>
+int transformValue(ContainerValue<TypeValue> inputValue) {
+    int localValue = SizeValue;
+    if (localValue != 0 && !inputValue.empty()) goto doneLabel;
+doneLabel:
+    return localValue;
+}
+int main() { return transformValue<int, 1, std::vector>({}); }
+"#;
+    let options = Options {
+        profile: Profile::Symbols,
+        compact: false,
+        strip_comments: false,
+        ..Options::default()
+    };
+
+    let output = obfuscate(source, &options).unwrap();
+
+    for original in [
+        "TypeValue",
+        "SizeValue",
+        "ContainerValue",
+        "inputValue",
+        "localValue",
+        "doneLabel",
+    ] {
+        assert!(!output.contains(original), "{original} was not renamed");
+    }
+}
+
+#[test]
+fn reuses_local_short_names_between_functions() {
+    let source = r#"
+int firstFunction(int firstParameter) { return firstParameter; }
+int secondFunction(int secondParameter) { return secondParameter; }
+int main() { return firstFunction(1) + secondFunction(2); }
+"#;
+    let output = obfuscate(source, &Options::default()).unwrap();
+    let parameters: Vec<&str> = output
+        .lines()
+        .filter(|line| line.starts_with("int ") && !line.starts_with("int main"))
+        .filter_map(|line| line.split("(int ").nth(1))
+        .filter_map(|tail| tail.split(')').next())
+        .collect();
+
+    assert_eq!(parameters.len(), 2);
+    assert_eq!(parameters[0], parameters[1]);
+}
+
+#[test]
+fn balanced_profile_obfuscates_literals_and_operators() {
+    let source = r#"
+#include <string>
+int main() {
+    std::string messageValue = "hello";
+    char markerValue = 'A';
+    int numberValue = 42;
+    return numberValue != markerValue && !messageValue.empty();
+}
+"#;
+    let output = obfuscate(source, &Options::default()).unwrap();
+
+    assert!(!output.contains("\"hello\""));
+    assert!(output.contains("\\150"));
+    assert!(output.contains("'\\101'"));
+    assert!(!output.contains("42"));
+    assert!(output.contains("not_eq") || output.contains(" and ") || output.contains("not "));
+}
+
+#[test]
+fn maximum_profile_inserts_valid_separator_comments() {
+    let source = "int helperValue(int inputValue) { return inputValue + 1; }\n";
+    let options = Options {
+        profile: Profile::Maximum,
+        ..Options::default()
+    };
+
+    let output = obfuscate(source, &options).unwrap();
+
+    assert!(output.contains("/**/"));
+    assert!(!output.contains("helperValue"));
+    assert!(!output.contains("inputValue"));
+}
+
+#[test]
+fn compact_layout_preserves_physical_line_count() {
+    let source = "\n// heading\n\nint main() {\n    return __LINE__;\n}\n";
+    let output = obfuscate(source, &Options::default()).unwrap();
+
+    assert_eq!(
+        source.bytes().filter(|byte| *byte == b'\n').count(),
+        output.bytes().filter(|byte| *byte == b'\n').count()
+    );
+}
+
+#[test]
+fn rejects_stringifying_macros() {
+    let source = "#define STRINGIFY(x) #x\nint main(){return STRINGIFY(value)[0];}\n";
+    let error = obfuscate(source, &Options::default()).unwrap_err();
+
+    assert!(matches!(error, ObfuscationError::Unsupported(_)));
+    assert!(error.to_string().contains("stringifying"));
+}
+
+#[test]
+fn preserves_names_that_require_cpp_lookup() {
+    let source = r#"
+int inheritedName = 100;
+struct Base { int inheritedName = 7; };
+struct Derived : Base {
+    int readValue() const { return inheritedName; }
+};
+namespace imported { long chooseValue(long) { return 7; } }
+int chooseValue(int) { return 100; }
+using namespace imported;
+int main() {
+    Derived itemValue;
+    return itemValue.readValue() + chooseValue(1L);
+}
+"#;
+    let options = Options {
+        profile: Profile::Symbols,
+        compact: false,
+        strip_comments: false,
+        ..Options::default()
+    };
+
+    let output = obfuscate(source, &options).unwrap();
+
+    assert_eq!(output.matches("inheritedName").count(), 3);
+    assert_eq!(output.matches("chooseValue").count(), 3);
+    assert!(!output.contains("itemValue"));
+}
+
+#[test]
+fn preserves_cross_scope_adl_overload_sets() {
+    let source = r#"
+namespace domain {
+struct Value {};
+int chooseValue(Value) { return 7; }
+}
+int chooseValue(int) { return 100; }
+int main() { return chooseValue(domain::Value{}); }
+"#;
+    let options = Options {
+        profile: Profile::Symbols,
+        compact: false,
+        strip_comments: false,
+        ..Options::default()
+    };
+
+    let output = obfuscate(source, &options).unwrap();
+
+    assert_eq!(output.matches("chooseValue").count(), 3);
+}
+
+#[test]
+fn maximum_profile_handles_alternative_assignment_operators() {
+    let source = r#"
+int main() {
+    int value = 3;
+    int* pointer = &value;
+    value &= 7;
+    value |= 8;
+    value ^= 1;
+    return (~value | *pointer) ^ 2;
+}
+"#;
+    let options = Options {
+        profile: Profile::Maximum,
+        ..Options::default()
+    };
+
+    let output = obfuscate(source, &options).unwrap();
+
+    assert!(output.contains("and_eq"));
+    assert!(output.contains("or_eq"));
+    assert!(output.contains("xor_eq"));
+    assert!(output.contains("compl"));
+    assert!(output.contains("bitor"));
+    assert!(output.contains('&'));
+    assert!(!output.contains("bitand"));
+}
+
+#[test]
+fn maximum_profile_keeps_division_comment_boundaries_safe() {
+    let source = "int main(){int value=12;int divisor=3;return value / divisor;}\n";
+    let options = Options {
+        profile: Profile::Maximum,
+        ..Options::default()
+    };
+
+    let output = obfuscate(source, &options).unwrap();
+
+    assert!(output.contains("/ "));
+    assert!(!output.contains("//**/"));
+    assert!(!output.contains("//*_*/"));
 }

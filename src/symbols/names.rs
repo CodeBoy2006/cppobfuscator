@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use crate::random::SplitMix64;
+
 pub(super) fn scan_identifiers(text: &str) -> Vec<String> {
     let mut identifiers = Vec::new();
     let mut start = None;
@@ -41,13 +43,20 @@ pub(super) struct NameGenerator {
 }
 
 impl NameGenerator {
-    pub fn new(seed: u64, used: HashSet<String>) -> Self {
-        let mut first: Vec<char> = "abcdefghijklmnopqrstuvwxyz".chars().collect();
+    pub fn new(seed: u64, used: HashSet<String>, ambiguous: bool) -> Self {
         let mut rng = SplitMix64::new(seed);
+        let (mut first, mut rest): (Vec<char>, Vec<char>) = if ambiguous {
+            ("ilo".chars().collect(), "ilo01".chars().collect())
+        } else {
+            let first: Vec<char> = "abcdefghijklmnopqrstuvwxyz".chars().collect();
+            let rest = first.clone();
+            (first, rest)
+        };
         shuffle(&mut first, &mut rng);
-
-        let mut rest = first.clone();
-        rest.extend("0123456789".chars());
+        shuffle(&mut rest, &mut rng);
+        if !ambiguous {
+            rest.extend("0123456789".chars());
+        }
         Self {
             index: 0,
             first,
@@ -94,24 +103,6 @@ impl NameGenerator {
             index -= count;
             suffix_len += 1;
         }
-    }
-}
-
-struct SplitMix64 {
-    state: u64,
-}
-
-impl SplitMix64 {
-    fn new(seed: u64) -> Self {
-        Self { state: seed }
-    }
-
-    fn next(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E3779B97F4A7C15);
-        let mut value = self.state;
-        value = (value ^ (value >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-        value = (value ^ (value >> 27)).wrapping_mul(0x94D049BB133111EB);
-        value ^ (value >> 31)
     }
 }
 

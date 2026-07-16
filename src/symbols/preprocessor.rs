@@ -1,6 +1,15 @@
 pub(super) fn has_token_paste(text: &str) -> bool {
+    scan_macro_operators(text).token_paste
+}
+
+pub(super) fn has_stringification(text: &str) -> bool {
+    scan_macro_operators(text).stringification
+}
+
+fn scan_macro_operators(text: &str) -> MacroOperators {
     let bytes = text.as_bytes();
     let mut index = 0;
+    let mut operators = MacroOperators::default();
 
     while index < bytes.len() {
         if let Some(end) = raw_string_end(bytes, index) {
@@ -18,13 +27,33 @@ pub(super) fn has_token_paste(text: &str) -> bool {
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
                 index = block_comment_end(bytes, index + 2);
             }
-            b'#' if bytes.get(index + 1) == Some(&b'#') => return true,
-            b'%' if bytes[index..].starts_with(b"%:%:") => return true,
+            b'#' if bytes.get(index + 1) == Some(&b'#') => {
+                operators.token_paste = true;
+                index += 2;
+            }
+            b'#' => {
+                operators.stringification = true;
+                index += 1;
+            }
+            b'%' if bytes[index..].starts_with(b"%:%:") => {
+                operators.token_paste = true;
+                index += 4;
+            }
+            b'%' if bytes[index..].starts_with(b"%:") => {
+                operators.stringification = true;
+                index += 2;
+            }
             _ => index += 1,
         }
     }
 
-    false
+    operators
+}
+
+#[derive(Default)]
+struct MacroOperators {
+    token_paste: bool,
+    stringification: bool,
 }
 
 fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
@@ -113,5 +142,13 @@ mod tests {
     fn ignores_hashes_inside_literals_and_comments() {
         assert!(!has_token_paste(r###""##" '##' R"tag(##)tag""###));
         assert!(!has_token_paste("/* ## */ value // ##"));
+    }
+
+    #[test]
+    fn finds_stringification_but_ignores_literals() {
+        assert!(has_stringification("#value"));
+        assert!(has_stringification("%: value"));
+        assert!(!has_stringification(r###""#value" R"tag(%:)tag""###));
+        assert!(!has_stringification("/* #value */ item"));
     }
 }

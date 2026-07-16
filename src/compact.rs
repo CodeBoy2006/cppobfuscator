@@ -1,6 +1,8 @@
 use tree_sitter::Node;
 
 use crate::ObfuscationError;
+use crate::Profile;
+use crate::random::SplitMix64;
 use crate::rewrite::{self, TextEdit};
 
 pub(crate) fn render(
@@ -8,9 +10,17 @@ pub(crate) fn render(
     root: Node<'_>,
     compact: bool,
     strip_comments: bool,
+    profile: Profile,
+    seed: u64,
 ) -> Result<String, ObfuscationError> {
     if compact {
-        compact_source(source, root, strip_comments)
+        compact_source(
+            source,
+            root,
+            strip_comments,
+            profile.inserts_separator_comments(),
+            seed,
+        )
     } else if strip_comments {
         strip_comments_preserving_layout(source, root)
     } else {
@@ -22,31 +32,66 @@ fn compact_source(
     source: &str,
     root: Node<'_>,
     strip_comments: bool,
+    insert_separator_comments: bool,
+    seed: u64,
 ) -> Result<String, ObfuscationError> {
     let mut leaves = Vec::new();
-    collect_leaves(root, &mut leaves);
+    collect_leaves(root, false, &mut leaves);
 
     let mut output = String::with_capacity(source.len());
     let mut cursor = 0;
     let mut pending = PendingSeparator::default();
+    let mut previous_preprocessor = false;
+    let mut previous_alternative_operator = false;
+    let mut previous_slash = false;
+    let mut rng = SplitMix64::new(seed ^ 0xC0A9_AC71_C0DE_5EED);
 
     for leaf in leaves {
-        pending.feed_gap(&source[cursor..leaf.start_byte()])?;
-        let text = &source[leaf.start_byte()..leaf.end_byte()];
-        cursor = leaf.end_byte();
+        pending.feed_gap(&source[cursor..leaf.node.start_byte()])?;
+        let text = &source[leaf.node.start_byte()..leaf.node.end_byte()];
+        cursor = leaf.node.end_byte();
 
-        if strip_comments && leaf.kind() == "comment" {
+        if strip_comments && leaf.node.kind() == "comment" {
             pending.feed_comment(text);
             continue;
         }
 
-        pending.flush(&mut output);
+        let current_alternative_operator = is_alternative_operator(leaf.node.kind());
+        // Tree-sitter has stricter comment boundaries around alternative tokens,
+        // and a comment immediately after `/` would begin with `//` in raw text.
+        let noise_allowed = insert_separator_comments
+            && !previous_preprocessor
+            && !leaf.in_preprocessor
+            && !previous_alternative_operator
+            && !current_alternative_operator
+            && !previous_slash;
+        pending.flush(&mut output, noise_allowed, &mut rng);
         output.push_str(text);
+        previous_preprocessor = leaf.in_preprocessor;
+        previous_alternative_operator = current_alternative_operator;
+        previous_slash = leaf.node.kind() == "/";
     }
 
     pending.feed_gap(&source[cursor..])?;
-    pending.finish(&mut output);
+    pending.finish(&mut output, &mut rng);
     Ok(output)
+}
+
+fn is_alternative_operator(kind: &str) -> bool {
+    matches!(
+        kind,
+        "and"
+            | "or"
+            | "not"
+            | "bitand"
+            | "bitor"
+            | "xor"
+            | "compl"
+            | "and_eq"
+            | "or_eq"
+            | "xor_eq"
+            | "not_eq"
+    )
 }
 
 fn strip_comments_preserving_layout(
@@ -58,15 +103,24 @@ fn strip_comments_preserving_layout(
     rewrite::apply(source, &edits)
 }
 
-fn collect_leaves<'tree>(node: Node<'tree>, leaves: &mut Vec<Node<'tree>>) {
+struct Leaf<'tree> {
+    node: Node<'tree>,
+    in_preprocessor: bool,
+}
+
+fn collect_leaves<'tree>(node: Node<'tree>, in_preprocessor: bool, leaves: &mut Vec<Leaf<'tree>>) {
+    let in_preprocessor = in_preprocessor || node.kind().starts_with("preproc_");
     if node.child_count() == 0 {
-        leaves.push(node);
+        leaves.push(Leaf {
+            node,
+            in_preprocessor,
+        });
         return;
     }
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_leaves(child, leaves);
+        collect_leaves(child, in_preprocessor, leaves);
     }
 }
 
@@ -96,7 +150,7 @@ fn collect_comment_edits(node: Node<'_>, source: &str, edits: &mut Vec<TextEdit>
 #[derive(Default)]
 struct PendingSeparator {
     saw_space: bool,
-    saw_newline: bool,
+    newline_count: usize,
     line_continuations: usize,
 }
 
@@ -118,7 +172,7 @@ impl PendingSeparator {
                     index += 3;
                 }
                 b'\n' => {
-                    self.saw_newline = true;
+                    self.newline_count += 1;
                     index += 1;
                 }
                 b'\r' | b' ' | b'\t' | 0x0B | 0x0C => {
@@ -136,37 +190,53 @@ impl PendingSeparator {
     }
 
     fn feed_comment(&mut self, comment: &str) {
-        if comment.contains('\n') {
-            self.saw_newline = true;
+        let newline_count = comment.bytes().filter(|byte| *byte == b'\n').count();
+        if newline_count > 0 {
+            self.newline_count += newline_count;
         } else {
             self.saw_space = true;
         }
     }
 
-    fn flush(&mut self, output: &mut String) {
-        if !output.is_empty() {
+    fn flush(&mut self, output: &mut String, noise_allowed: bool, rng: &mut SplitMix64) {
+        if output.is_empty() {
+            for _ in 0..self.line_continuations {
+                output.push_str("\\\n");
+            }
+            for _ in 0..self.newline_count {
+                output.push('\n');
+            }
+        } else {
             if self.line_continuations > 0 {
                 output.push(' ');
                 for _ in 0..self.line_continuations {
                     output.push_str("\\\n");
                 }
             }
-            if self.saw_newline {
-                output.push('\n');
+            if self.newline_count > 0 {
+                for _ in 0..self.newline_count {
+                    output.push('\n');
+                }
             } else if self.saw_space && self.line_continuations == 0 {
-                output.push(' ');
+                if noise_allowed {
+                    output.push_str(if rng.one_in(2) { "/**/" } else { "/*_*/" });
+                } else {
+                    output.push(' ');
+                }
             }
         }
         self.saw_space = false;
-        self.saw_newline = false;
+        self.newline_count = 0;
         self.line_continuations = 0;
     }
 
-    fn finish(&mut self, output: &mut String) {
+    fn finish(&mut self, output: &mut String, rng: &mut SplitMix64) {
         if self.line_continuations > 0 {
-            self.flush(output);
-        } else if self.saw_newline && !output.ends_with('\n') {
-            output.push('\n');
+            self.flush(output, false, rng);
+        } else {
+            for _ in 0..self.newline_count {
+                output.push('\n');
+            }
         }
     }
 }

@@ -1,4 +1,6 @@
 mod compact;
+mod lexical;
+mod random;
 mod rewrite;
 mod symbols;
 mod syntax;
@@ -6,6 +8,36 @@ mod syntax;
 use std::collections::BTreeSet;
 use std::error::Error as StdError;
 use std::fmt;
+
+/// Selects how much zero-runtime source obfuscation is applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Profile {
+    /// Rename symbols and render the configured source layout.
+    Symbols,
+    /// Also obfuscate literals and expression operator spellings.
+    #[default]
+    Balanced,
+    /// Maximize lexical density with ambiguous names and separator comments.
+    Maximum,
+}
+
+impl Profile {
+    pub(crate) fn obfuscates_lexical_tokens(self) -> bool {
+        self != Self::Symbols
+    }
+
+    pub(crate) fn reuses_local_names(self) -> bool {
+        self != Self::Symbols
+    }
+
+    pub(crate) fn inserts_separator_comments(self) -> bool {
+        self == Self::Maximum
+    }
+
+    pub(crate) fn uses_ambiguous_names(self) -> bool {
+        self == Self::Maximum
+    }
+}
 
 /// Controls deterministic symbol renaming and source layout rendering.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +50,8 @@ pub struct Options {
     pub strip_comments: bool,
     /// Identifier spellings that must remain unchanged.
     pub preserve: BTreeSet<String>,
+    /// Strength of zero-runtime lexical obfuscation.
+    pub profile: Profile,
 }
 
 impl Default for Options {
@@ -27,6 +61,7 @@ impl Default for Options {
             compact: true,
             strip_comments: true,
             preserve: BTreeSet::new(),
+            profile: Profile::Balanced,
         }
     }
 }
@@ -86,11 +121,27 @@ pub fn obfuscate(source: &str, options: &Options) -> Result<String, ObfuscationE
         "identifier rewrite changed the syntax tree",
     )?;
 
-    let output = compact::render(
+    let lexical_edits = lexical::obfuscation_edits(
         &renamed,
         renamed_tree.root_node(),
+        options.profile,
+        options.seed,
+    );
+    let lexical = rewrite::apply(&renamed, &lexical_edits)?;
+    let lexical_tree = syntax::parse(&lexical)?;
+    syntax::ensure_same_structure(
+        &original_signature,
+        lexical_tree.root_node(),
+        "lexical rewrite changed the syntax tree",
+    )?;
+
+    let output = compact::render(
+        &lexical,
+        lexical_tree.root_node(),
         options.compact,
         options.strip_comments,
+        options.profile,
+        options.seed,
     )?;
     let output_tree = syntax::parse(&output)?;
     syntax::ensure_same_structure(
@@ -117,7 +168,14 @@ mod tests {
         let source = r#"#define LOOP(i,n) for(int i=0;i<(n);++i)
 int main(){int sum=0;LOOP(index,3){sum+=index;}return sum;}
 "#;
-        let output = obfuscate(source, &Options::default()).unwrap();
+        let output = obfuscate(
+            source,
+            &Options {
+                profile: Profile::Symbols,
+                ..Options::default()
+            },
+        )
+        .unwrap();
 
         assert!(output.contains("LOOP(index,3)"));
         assert!(!output.contains("sum"));

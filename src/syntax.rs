@@ -63,13 +63,35 @@ fn append_signature(node: Node<'_>, field: Option<&str>, output: &mut String) {
     if node.is_missing() {
         output.push('?');
     }
-    output.push_str(node.kind());
+    output.push_str(normalized_kind(node.kind()));
+
+    if matches!(node.kind(), "char_literal" | "string_literal") {
+        output.push(')');
+        return;
+    }
 
     for index in 0..node.child_count() {
         let child = node.child(index as u32).expect("valid child index");
         append_signature(child, node.field_name_for_child(index as u32), output);
     }
     output.push(')');
+}
+
+fn normalized_kind(kind: &str) -> &str {
+    match kind {
+        "and" => "&&",
+        "or" => "||",
+        "not" => "!",
+        "bitand" => "&",
+        "bitor" => "|",
+        "xor" => "^",
+        "compl" => "~",
+        "and_eq" => "&=",
+        "or_eq" => "|=",
+        "xor_eq" => "^=",
+        "not_eq" => "!=",
+        _ => kind,
+    }
 }
 
 fn first_unsupported_error<'tree>(

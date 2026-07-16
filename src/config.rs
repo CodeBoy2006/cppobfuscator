@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::env;
 use std::path::PathBuf;
 
-use cppobfuscator::Options;
+use cppobfuscator::{Options, Profile};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Config {
@@ -30,6 +30,7 @@ impl Config {
         let mut compact = true;
         let mut strip_comments = true;
         let mut preserve = BTreeSet::new();
+        let mut profile = Profile::default();
         let mut args = args.into_iter();
 
         while let Some(argument) = args.next() {
@@ -53,6 +54,10 @@ impl Config {
                     }
                     preserve.insert(name);
                 }
+                "--profile" => {
+                    let value = required_value(&mut args, "--profile")?;
+                    profile = parse_profile(&value)?;
+                }
                 "--keep-comments" => strip_comments = false,
                 "--keep-layout" => compact = false,
                 _ => {
@@ -69,6 +74,7 @@ impl Config {
                 compact,
                 strip_comments,
                 preserve,
+                profile,
             },
         }))
     }
@@ -84,6 +90,7 @@ OPTIONS:
   -o, --output <PATH>      Write transformed source to a file (default: stdout)
       --seed <U64>         Rename seed; decimal or 0x-prefixed (default: 0xC0FFEE)
       --preserve <NAME>    Preserve an identifier; may be repeated
+      --profile <NAME>     symbols, balanced, or maximum (default: balanced)
       --keep-comments      Keep comments
       --keep-layout        Keep original whitespace and line layout
   -h, --help               Print help
@@ -103,6 +110,17 @@ fn parse_seed(value: &str) -> Result<u64, String> {
         .or_else(|| value.strip_prefix("0X"))
         .map_or_else(|| value.parse::<u64>(), |hex| u64::from_str_radix(hex, 16));
     parsed.map_err(|_| format!("invalid --seed value: {value:?}"))
+}
+
+fn parse_profile(value: &str) -> Result<Profile, String> {
+    match value {
+        "symbols" => Ok(Profile::Symbols),
+        "balanced" => Ok(Profile::Balanced),
+        "maximum" => Ok(Profile::Maximum),
+        _ => Err(format!(
+            "invalid --profile value {value:?}; expected symbols, balanced, or maximum"
+        )),
+    }
 }
 
 fn is_identifier(name: &str) -> bool {
@@ -129,6 +147,8 @@ mod tests {
             "0x2a",
             "--keep-comments",
             "--keep-layout",
+            "--profile",
+            "maximum",
             "--preserve",
             "solve",
         ])
@@ -140,6 +160,7 @@ mod tests {
         assert_eq!(config.options.seed, 42);
         assert!(!config.options.compact);
         assert!(!config.options.strip_comments);
+        assert_eq!(config.options.profile, Profile::Maximum);
         assert!(config.options.preserve.contains("solve"));
     }
 
@@ -153,5 +174,11 @@ mod tests {
     fn validates_preserved_identifiers() {
         let error = parse(&["--preserve", "not-a-name"]).unwrap_err();
         assert!(error.contains("C++ identifier"));
+    }
+
+    #[test]
+    fn validates_profile_names() {
+        let error = parse(&["--profile", "extreme"]).unwrap_err();
+        assert!(error.contains("symbols, balanced, or maximum"));
     }
 }

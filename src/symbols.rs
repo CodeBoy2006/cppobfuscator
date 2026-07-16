@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use tree_sitter::Node;
 
@@ -13,10 +13,11 @@ use declarator::{
     declarator_name_is_qualified, find_descendant, innermost_function_declarator,
 };
 use names::{NameGenerator, is_reserved_identifier, scan_identifiers};
-use preprocessor::has_token_paste;
+use preprocessor::{has_stringification, has_token_paste};
 
 type ScopeId = usize;
 type SymbolId = usize;
+type RenameDomainId = usize;
 type ByteRange = (usize, usize);
 
 pub(crate) fn rename_edits(
@@ -28,15 +29,17 @@ pub(crate) fn rename_edits(
     analyzer.collect_source_identifiers(root);
     analyzer.collect_preprocessor_names(root)?;
     analyzer.collect_linkage_names(root, false);
+    analyzer.collect_using_namespace(root);
     analyzer.collect_declarations(root, analyzer.root_scope);
     analyzer.collect_ignored_parameter_names(root);
     analyzer.collect_references(root, analyzer.root_scope);
-    Ok(analyzer.build_edits(options.seed))
+    Ok(analyzer.build_edits(options))
 }
 
 struct Analyzer<'source> {
     source: &'source str,
     root_scope: ScopeId,
+    next_domain: RenameDomainId,
     scopes: Vec<Scope>,
     scope_by_node: HashMap<usize, ScopeId>,
     namespace_scopes: HashMap<(ScopeId, String), ScopeId>,
@@ -47,6 +50,7 @@ struct Analyzer<'source> {
     preserve_names: HashSet<String>,
     unresolved_names: HashSet<String>,
     used_names: HashSet<String>,
+    has_using_namespace: bool,
 }
 
 impl<'source> Analyzer<'source> {
@@ -61,11 +65,13 @@ impl<'source> Analyzer<'source> {
         Self {
             source,
             root_scope,
+            next_domain: 1,
             scopes: vec![Scope {
                 parent: None,
                 kind: ScopeKind::Root,
                 start: root.start_byte(),
                 allow_parent_lookup: true,
+                rename_domain: 0,
                 symbols: HashMap::new(),
             }],
             scope_by_node,
@@ -77,6 +83,7 @@ impl<'source> Analyzer<'source> {
             preserve_names,
             unresolved_names: HashSet::new(),
             used_names: HashSet::new(),
+            has_using_namespace: false,
         }
     }
 
@@ -106,6 +113,21 @@ impl<'source> Analyzer<'source> {
         }
 
         self.collect_linkage_children(node, has_linkage);
+    }
+
+    fn collect_using_namespace(&mut self, node: Node<'_>) {
+        if node.kind() == "using_declaration"
+            && self
+                .node_text(node)
+                .is_some_and(|text| text.trim_start().starts_with("using namespace"))
+        {
+            self.has_using_namespace = true;
+        }
+
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            self.collect_using_namespace(child);
+        }
     }
 
     fn collect_linkage_children(&mut self, node: Node<'_>, inherited_linkage: bool) {
@@ -171,6 +193,7 @@ impl<'source> Analyzer<'source> {
                 if let Some(value) = node.child_by_field_name("value") {
                     let text = self.node_text(value).unwrap_or_default();
                     reject_token_pasting(text)?;
+                    reject_stringification(text)?;
                     for identifier in scan_identifiers(text) {
                         if !parameters.contains(&identifier) {
                             self.preserve_names.insert(identifier);
@@ -234,14 +257,24 @@ impl<'source> Analyzer<'source> {
                 let scope = self.add_namespace_scope(node, current_scope);
                 self.collect_children(node, scope);
             }
+            "template_declaration" => {
+                let scope = self.add_scope(node, current_scope, ScopeKind::Template, true);
+                if let Some(parameters) = node.child_by_field_name("parameters") {
+                    self.collect_template_parameters(parameters, scope);
+                }
+                self.collect_children(node, scope);
+            }
             "class_specifier" | "struct_specifier" | "union_specifier" => {
-                let scope = self.add_scope(node, current_scope, ScopeKind::Class, true);
+                // Without a type system, inherited members cannot be separated
+                // from same-named outer declarations. Stop lookup at this class.
+                let allow_parent_lookup = !has_named_child(node, "base_class_clause");
+                let scope =
+                    self.add_scope(node, current_scope, ScopeKind::Class, allow_parent_lookup);
                 self.collect_children(node, scope);
             }
             "function_definition" => {
                 let qualified = self.register_function_definition(node, current_scope);
-                let function_scope =
-                    self.add_scope(node, current_scope, ScopeKind::Function, !qualified);
+                let function_scope = self.add_function_scope(node, current_scope, !qualified);
 
                 if let Some(declarator) = node.child_by_field_name("declarator") {
                     self.collect_function_parameters(declarator, function_scope);
@@ -302,6 +335,20 @@ impl<'source> Analyzer<'source> {
                 self.preserve_friend_names(node);
                 self.collect_children(node, current_scope);
             }
+            "labeled_statement" => {
+                if let Some(label) = node.child_by_field_name("label")
+                    && let Some(function_scope) = self.nearest_function_scope(current_scope)
+                {
+                    self.declare(
+                        label,
+                        SymbolKind::Label,
+                        function_scope,
+                        self.scopes[function_scope].start,
+                        false,
+                    );
+                }
+                self.collect_children(node, current_scope);
+            }
             "enumerator" => {
                 if let Some(name) = node.child_by_field_name("name").or_else(|| {
                     let mut cursor = node.walk();
@@ -326,6 +373,41 @@ impl<'source> Analyzer<'source> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             self.collect_declarations(child, current_scope);
+        }
+    }
+
+    fn collect_template_parameters(&mut self, list: Node<'_>, scope: ScopeId) {
+        let mut cursor = list.walk();
+        for parameter in list.named_children(&mut cursor) {
+            match parameter.kind() {
+                "type_parameter_declaration"
+                | "optional_type_parameter_declaration"
+                | "variadic_type_parameter_declaration"
+                | "template_template_parameter_declaration" => {
+                    if let Some(name) = direct_type_parameter_name(parameter) {
+                        self.declare(
+                            name,
+                            SymbolKind::TypeParameter,
+                            scope,
+                            name.end_byte(),
+                            false,
+                        );
+                    }
+                }
+                "parameter_declaration"
+                | "optional_parameter_declaration"
+                | "variadic_parameter_declaration" => {
+                    if let Some(declarator) = parameter.child_by_field_name("declarator") {
+                        self.register_declarator(
+                            declarator,
+                            scope,
+                            declarator.end_byte(),
+                            DeclarationContext::Value,
+                        );
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -563,6 +645,18 @@ impl<'source> Analyzer<'source> {
             .copied()
             .unwrap_or(inherited_scope);
 
+        if self.has_using_namespace
+            && node.kind() == "call_expression"
+            && let Some(function) = node.child_by_field_name("function")
+            && function.kind() == "identifier"
+            && let Some(name) = self.node_text(function)
+            && let LookupResult::Resolved(symbol) =
+                self.lookup(current_scope, name, function.start_byte())
+            && self.symbols[symbol].kind == SymbolKind::Function
+        {
+            self.preserve_names.insert(name.to_string());
+        }
+
         match node.kind() {
             "preproc_def"
             | "preproc_function_def"
@@ -581,8 +675,23 @@ impl<'source> Analyzer<'source> {
                 }
                 return;
             }
-            "qualified_identifier" | "using_declaration" => {
+            "gnu_asm_goto_list" => {
                 self.preserve_names.extend(self.identifier_texts(node));
+                return;
+            }
+            "qualified_identifier" => {
+                self.collect_qualified_references(node, current_scope);
+                return;
+            }
+            "using_declaration" => {
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    if child.kind() == "qualified_identifier" {
+                        self.collect_qualified_references(child, current_scope);
+                    } else {
+                        self.preserve_names.extend(self.identifier_texts(child));
+                    }
+                }
                 return;
             }
             "field_expression" => {
@@ -598,17 +707,123 @@ impl<'source> Analyzer<'source> {
                 self.collect_identifier_reference(node, current_scope);
                 return;
             }
-            "field_identifier"
-            | "type_identifier"
-            | "namespace_identifier"
-            | "statement_identifier"
-            | "literal_suffix" => return,
+            "type_identifier" | "namespace_identifier" => {
+                self.collect_type_parameter_reference(node, current_scope, false);
+                return;
+            }
+            "statement_identifier" => {
+                self.collect_label_reference(node, current_scope);
+                return;
+            }
+            "field_identifier" | "literal_suffix" => return,
             _ => {}
         }
 
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             self.collect_references(child, current_scope);
+        }
+    }
+
+    fn collect_qualified_references(&mut self, node: Node<'_>, scope: ScopeId) {
+        for index in 0..node.child_count() {
+            let Some(child) = node.child(index as u32) else {
+                continue;
+            };
+            if !child.is_named() {
+                continue;
+            }
+            match node.field_name_for_child(index as u32) {
+                Some("scope") => self.collect_qualified_scope(child, scope),
+                Some("name") => self.preserve_qualified_name(child, scope),
+                _ => self.collect_references(child, scope),
+            }
+        }
+    }
+
+    fn collect_qualified_scope(&mut self, node: Node<'_>, scope: ScopeId) {
+        match node.kind() {
+            "identifier" | "namespace_identifier" | "type_identifier" => {
+                self.collect_type_parameter_reference(node, scope, true);
+            }
+            "template_type" => {
+                if let Some(name) = node.child_by_field_name("name") {
+                    self.collect_type_parameter_reference(name, scope, true);
+                }
+                if let Some(arguments) = node.child_by_field_name("arguments") {
+                    self.collect_references(arguments, scope);
+                }
+            }
+            "qualified_identifier" => self.collect_qualified_references(node, scope),
+            _ => {
+                let mut cursor = node.walk();
+                for child in node.named_children(&mut cursor) {
+                    self.collect_qualified_scope(child, scope);
+                }
+            }
+        }
+    }
+
+    fn preserve_qualified_name(&mut self, node: Node<'_>, scope: ScopeId) {
+        if node.kind() == "template_type" {
+            if let Some(name) = node.child_by_field_name("name")
+                && let Some(text) = self.node_text(name)
+            {
+                self.preserve_names.insert(text.to_string());
+            }
+            if let Some(arguments) = node.child_by_field_name("arguments") {
+                self.collect_references(arguments, scope);
+            }
+        } else {
+            self.preserve_names.extend(self.identifier_texts(node));
+        }
+    }
+
+    fn collect_type_parameter_reference(
+        &mut self,
+        node: Node<'_>,
+        scope: ScopeId,
+        preserve_if_missing: bool,
+    ) {
+        let range = node_range(node);
+        if self.declarations.contains_key(&range) || self.ignored_ranges.contains(&range) {
+            return;
+        }
+        let Some(name) = self.node_text(node).map(str::to_string) else {
+            return;
+        };
+
+        match self.lookup_kind(scope, &name, node.start_byte(), SymbolKind::TypeParameter) {
+            LookupResult::Resolved(symbol) => {
+                self.symbols[symbol].occurrences.insert(range);
+            }
+            LookupResult::Ambiguous | LookupResult::Missing if preserve_if_missing => {
+                self.preserve_names.insert(name);
+            }
+            LookupResult::Ambiguous | LookupResult::Missing => {}
+        }
+    }
+
+    fn collect_label_reference(&mut self, node: Node<'_>, scope: ScopeId) {
+        let range = node_range(node);
+        if self.declarations.contains_key(&range) || self.ignored_ranges.contains(&range) {
+            return;
+        }
+        let Some(name) = self.node_text(node) else {
+            return;
+        };
+        let Some(function_scope) = self.nearest_function_scope(scope) else {
+            self.preserve_names.insert(name.to_string());
+            return;
+        };
+
+        match self.lookup_kind(function_scope, name, node.start_byte(), SymbolKind::Label) {
+            LookupResult::Resolved(symbol) => {
+                self.symbols[symbol].occurrences.insert(range);
+            }
+            LookupResult::Ambiguous | LookupResult::Missing => {
+                self.preserve_names.insert(name.to_string());
+            }
         }
     }
 
@@ -633,11 +848,12 @@ impl<'source> Analyzer<'source> {
         }
     }
 
-    fn build_edits(&mut self, seed: u64) -> Vec<TextEdit> {
+    fn build_edits(&mut self, options: &Options) -> Vec<TextEdit> {
         self.preserve_names
             .extend(self.unresolved_names.iter().cloned());
+        self.preserve_cross_scope_function_names();
 
-        let mut candidates: Vec<SymbolId> = self
+        let candidates: Vec<SymbolId> = self
             .symbols
             .iter()
             .enumerate()
@@ -650,6 +866,72 @@ impl<'source> Analyzer<'source> {
             })
             .collect();
 
+        if !options.profile.reuses_local_names() {
+            let mut candidates = candidates;
+            self.sort_candidates(&mut candidates);
+            let mut generator = NameGenerator::new(
+                options.seed,
+                self.used_names.clone(),
+                options.profile.uses_ambiguous_names(),
+            );
+            let mut edits = Vec::new();
+            self.assign_names(&candidates, &mut generator, &mut edits);
+            return edits;
+        }
+
+        let mut domains = BTreeMap::<RenameDomainId, Vec<SymbolId>>::new();
+        for symbol in candidates {
+            domains
+                .entry(self.symbols[symbol].rename_domain)
+                .or_default()
+                .push(symbol);
+        }
+        for candidates in domains.values_mut() {
+            self.sort_candidates(candidates);
+        }
+
+        let mut edits = Vec::new();
+        let mut local_reserved = self.used_names.clone();
+        // Translation-unit names are visible from function bodies, so their
+        // generated spellings must remain reserved in every local domain.
+        if let Some(root_candidates) = domains.remove(&0) {
+            let mut generator = NameGenerator::new(
+                options.seed,
+                self.used_names.clone(),
+                options.profile.uses_ambiguous_names(),
+            );
+            local_reserved.extend(self.assign_names(&root_candidates, &mut generator, &mut edits));
+        }
+
+        for candidates in domains.into_values() {
+            let mut generator = NameGenerator::new(
+                options.seed,
+                local_reserved.clone(),
+                options.profile.uses_ambiguous_names(),
+            );
+            self.assign_names(&candidates, &mut generator, &mut edits);
+        }
+        edits
+    }
+
+    fn preserve_cross_scope_function_names(&mut self) {
+        let mut scopes_by_name = HashMap::<String, HashSet<ScopeId>>::new();
+        for symbol in &self.symbols {
+            if symbol.kind == SymbolKind::Function {
+                scopes_by_name
+                    .entry(symbol.name.clone())
+                    .or_default()
+                    .insert(symbol.scope);
+            }
+        }
+        for (name, scopes) in scopes_by_name {
+            if scopes.len() > 1 {
+                self.preserve_names.insert(name);
+            }
+        }
+    }
+
+    fn sort_candidates(&self, candidates: &mut [SymbolId]) {
         candidates.sort_by(|left, right| {
             self.symbols[*right]
                 .occurrences
@@ -661,11 +943,18 @@ impl<'source> Analyzer<'source> {
                         .cmp(&self.symbols[*right].first_declaration)
                 })
         });
+    }
 
-        let mut generator = NameGenerator::new(seed, self.used_names.clone());
-        let mut edits = Vec::new();
-        for symbol_id in candidates {
+    fn assign_names(
+        &self,
+        candidates: &[SymbolId],
+        generator: &mut NameGenerator,
+        edits: &mut Vec<TextEdit>,
+    ) -> Vec<String> {
+        let mut generated = Vec::new();
+        for &symbol_id in candidates {
             let new_name = generator.next_name();
+            generated.push(new_name.clone());
             for &(start, end) in &self.symbols[symbol_id].occurrences {
                 edits.push(TextEdit {
                     start,
@@ -674,7 +963,7 @@ impl<'source> Analyzer<'source> {
                 });
             }
         }
-        edits
+        generated
     }
 
     fn add_scope(
@@ -689,11 +978,38 @@ impl<'source> Analyzer<'source> {
         }
 
         let id = self.scopes.len();
+        let rename_domain = self.scopes[parent].rename_domain;
         self.scopes.push(Scope {
             parent: Some(parent),
             kind,
             start: node.start_byte(),
             allow_parent_lookup,
+            rename_domain,
+            symbols: HashMap::new(),
+        });
+        self.scope_by_node.insert(node.id(), id);
+        id
+    }
+
+    fn add_function_scope(
+        &mut self,
+        node: Node<'_>,
+        parent: ScopeId,
+        allow_parent_lookup: bool,
+    ) -> ScopeId {
+        if let Some(scope) = self.scope_by_node.get(&node.id()) {
+            return *scope;
+        }
+
+        let rename_domain = self.next_domain;
+        self.next_domain += 1;
+        let id = self.scopes.len();
+        self.scopes.push(Scope {
+            parent: Some(parent),
+            kind: ScopeKind::Function,
+            start: node.start_byte(),
+            allow_parent_lookup,
+            rename_domain,
             symbols: HashMap::new(),
         });
         self.scope_by_node.insert(node.id(), id);
@@ -716,6 +1032,7 @@ impl<'source> Analyzer<'source> {
                 kind: ScopeKind::Namespace,
                 start: node.start_byte(),
                 allow_parent_lookup: true,
+                rename_domain: self.scopes[parent].rename_domain,
                 symbols: HashMap::new(),
             });
             self.namespace_scopes.insert((parent, key), scope);
@@ -724,6 +1041,15 @@ impl<'source> Analyzer<'source> {
 
         self.scope_by_node.insert(node.id(), scope);
         scope
+    }
+
+    fn nearest_function_scope(&self, mut scope: ScopeId) -> Option<ScopeId> {
+        loop {
+            if self.scopes[scope].kind == ScopeKind::Function {
+                return Some(scope);
+            }
+            scope = self.scopes[scope].parent?;
+        }
     }
 
     fn declare(
@@ -756,6 +1082,8 @@ impl<'source> Analyzer<'source> {
             self.symbols.push(Symbol {
                 name: name.clone(),
                 kind,
+                scope,
+                rename_domain: self.scopes[scope].rename_domain,
                 visible_from,
                 first_declaration: name_node.start_byte(),
                 force_preserve,
@@ -775,12 +1103,37 @@ impl<'source> Analyzer<'source> {
     }
 
     fn lookup(&self, mut scope: ScopeId, name: &str, position: usize) -> LookupResult {
+        self.lookup_filtered(&mut scope, name, position, |kind| {
+            !matches!(kind, SymbolKind::Label | SymbolKind::TypeParameter)
+        })
+    }
+
+    fn lookup_kind(
+        &self,
+        mut scope: ScopeId,
+        name: &str,
+        position: usize,
+        expected: SymbolKind,
+    ) -> LookupResult {
+        self.lookup_filtered(&mut scope, name, position, |kind| kind == expected)
+    }
+
+    fn lookup_filtered(
+        &self,
+        scope: &mut ScopeId,
+        name: &str,
+        position: usize,
+        matches_kind: impl Fn(SymbolKind) -> bool,
+    ) -> LookupResult {
         loop {
-            if let Some(symbols) = self.scopes[scope].symbols.get(name) {
+            if let Some(symbols) = self.scopes[*scope].symbols.get(name) {
                 let visible: Vec<SymbolId> = symbols
                     .iter()
                     .copied()
-                    .filter(|symbol| self.symbols[*symbol].visible_from <= position)
+                    .filter(|symbol| {
+                        self.symbols[*symbol].visible_from <= position
+                            && matches_kind(self.symbols[*symbol].kind)
+                    })
                     .collect();
                 match visible.as_slice() {
                     [symbol] => return LookupResult::Resolved(*symbol),
@@ -789,13 +1142,13 @@ impl<'source> Analyzer<'source> {
                 }
             }
 
-            if !self.scopes[scope].allow_parent_lookup {
+            if !self.scopes[*scope].allow_parent_lookup {
                 return LookupResult::Missing;
             }
-            let Some(parent) = self.scopes[scope].parent else {
+            let Some(parent) = self.scopes[*scope].parent else {
                 return LookupResult::Missing;
             };
-            scope = parent;
+            *scope = parent;
         }
     }
 
@@ -828,6 +1181,7 @@ struct Scope {
     kind: ScopeKind,
     start: usize,
     allow_parent_lookup: bool,
+    rename_domain: RenameDomainId,
     symbols: HashMap<String, Vec<SymbolId>>,
 }
 
@@ -835,6 +1189,7 @@ struct Scope {
 enum ScopeKind {
     Root,
     Namespace,
+    Template,
     Class,
     Function,
     Lambda,
@@ -847,6 +1202,8 @@ enum ScopeKind {
 struct Symbol {
     name: String,
     kind: SymbolKind,
+    scope: ScopeId,
+    rename_domain: RenameDomainId,
     visible_from: usize,
     first_declaration: usize,
     force_preserve: bool,
@@ -857,6 +1214,8 @@ struct Symbol {
 enum SymbolKind {
     Variable,
     Function,
+    TypeParameter,
+    Label,
     Barrier,
 }
 
@@ -886,6 +1245,38 @@ fn node_range(node: Node<'_>) -> ByteRange {
     (node.start_byte(), node.end_byte())
 }
 
+fn has_named_child(node: Node<'_>, expected: &str) -> bool {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .any(|child| child.kind() == expected)
+}
+
+fn direct_type_parameter_name(node: Node<'_>) -> Option<Node<'_>> {
+    if let Some(name) = node.child_by_field_name("name") {
+        return Some(name);
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "template_parameter_list" {
+            continue;
+        }
+        if child.kind() == "type_identifier" {
+            return Some(child);
+        }
+        if matches!(
+            child.kind(),
+            "type_parameter_declaration"
+                | "optional_type_parameter_declaration"
+                | "variadic_type_parameter_declaration"
+        ) && let Some(name) = direct_type_parameter_name(child)
+        {
+            return Some(name);
+        }
+    }
+    None
+}
+
 fn is_identifier_kind(kind: &str) -> bool {
     matches!(
         kind,
@@ -909,6 +1300,16 @@ fn reject_token_pasting(text: &str) -> Result<(), ObfuscationError> {
     if has_token_paste(text) {
         Err(ObfuscationError::Unsupported(
             "token-pasting macros can synthesize identifiers".to_string(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn reject_stringification(text: &str) -> Result<(), ObfuscationError> {
+    if has_stringification(text) {
+        Err(ObfuscationError::Unsupported(
+            "stringifying macros expose identifier spellings".to_string(),
         ))
     } else {
         Ok(())
@@ -1008,7 +1409,10 @@ int main() {
     return itemValue.read();
 }
 "#,
-            &Options::default(),
+            &Options {
+                profile: crate::Profile::Symbols,
+                ..Options::default()
+            },
         )
         .unwrap();
 
