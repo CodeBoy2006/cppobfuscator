@@ -168,6 +168,29 @@ cppobfuscator [OPTIONS]
 cppobfuscator --profile maximum -i solution.cpp -o solution.obfuscated.cpp
 ```
 
+## End-to-end example
+
+The repository includes an original macro-heavy contest source and the
+deterministic maximum-profile result:
+
+- [`examples/T708557.cpp`](examples/T708557.cpp)
+- [`examples/T708557.obfuscated.cpp`](examples/T708557.obfuscated.cpp)
+
+Regenerate the artifact directly from the original source:
+
+```bash
+cargo run --release -- \
+  --profile maximum \
+  --seed 0x708557 \
+  -i examples/T708557.cpp \
+  -o examples/T708557.obfuscated.cpp
+```
+
+No compiler preprocessing step or manually prepared intermediate source is
+required. The input and output retain the same physical line count. A portable
+header variant of this case compiled as C++14 with GCC and Clang and produced
+byte-identical output for 401 deterministic random trees.
+
 ## Rust API
 
 ```rust

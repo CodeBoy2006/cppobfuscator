@@ -39,3 +39,9 @@
 - **Status:** Completed
 - **Next Steps:** None.
 - **Context:** Sixty Rust tests, Clippy with warnings denied, Rustdoc with warnings denied, and the release build pass. Portable original/maximum T708557 binaries built with GCC and Clang produced byte-identical 748,485-byte output across 401 random trees containing 42,472 vertices; a separate nested/empty/token-boundary/`__LINE__` macro suite also matched under Clang.
+
+## [2026-07-16 22:08] End-to-End Example Documentation
+- **Changes:** Added bilingual documentation linking the original macro-heavy T708557 source to its deterministic maximum artifact, including the exact direct-generation command, physical-line guarantee, and GCC/Clang behavioral verification.
+- **Status:** Completed
+- **Next Steps:** Merge the feature branch into the repository default branch.
+- **Context:** The repository has no `main` branch; its local and remote default branch is named `master`.

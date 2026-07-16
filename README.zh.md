@@ -136,6 +136,27 @@ cppobfuscator [OPTIONS]
 cppobfuscator --profile maximum -i solution.cpp -o solution.obfuscated.cpp
 ```
 
+## 端到端示例
+
+仓库提供了包含大量模板宏的原始竞赛源码，以及确定性生成的 maximum 产物：
+
+- [`examples/T708557.cpp`](examples/T708557.cpp)
+- [`examples/T708557.obfuscated.cpp`](examples/T708557.obfuscated.cpp)
+
+可以直接从原始源码重新生成：
+
+```bash
+cargo run --release -- \
+  --profile maximum \
+  --seed 0x708557 \
+  -i examples/T708557.cpp \
+  -o examples/T708557.obfuscated.cpp
+```
+
+不需要先调用编译器预处理器，也不需要手工准备中间源码。输入和输出的物理行数保持
+一致。该样例的可移植头文件版本已在 GCC 和 Clang 的 C++14 模式下编译，并在 401
+组确定性随机树上得到字节完全一致的输出。
+
 ## Rust API
 
 ```rust
