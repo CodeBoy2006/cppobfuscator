@@ -15,3 +15,9 @@
 - **Status:** Completed
 - **Next Steps:** None.
 - **Context:** The representative contest example now compiles with both `g++-15` and Apple Clang after maximum obfuscation and produces the same output as the original program.
+
+## [2026-07-16 21:15] T708557 Maximum Obfuscation
+- **Changes:** Added the original T708557 solution, a macro-normalized portable input, and its deterministic `maximum`-profile output generated with seed `0x708557`.
+- **Status:** Completed
+- **Next Steps:** None.
+- **Context:** The prepared and obfuscated sources compile with both `g++-15` and Apple Clang. Five original/prepared/obfuscated compiler variants produced byte-identical output across 401 random trees containing 43,922 vertices; all project tests also pass.
