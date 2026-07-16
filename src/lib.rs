@@ -1,5 +1,6 @@
 mod compact;
 mod constants;
+mod flow;
 mod integer;
 mod lexical;
 mod preprocessor;
@@ -13,7 +14,7 @@ use std::collections::BTreeSet;
 use std::error::Error as StdError;
 use std::fmt;
 
-/// Selects how much zero-runtime source obfuscation is applied.
+/// Selects how much low-overhead source obfuscation is applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Profile {
     /// Rename symbols and render the configured source layout.
@@ -21,7 +22,7 @@ pub enum Profile {
     /// Also obfuscate literals and expression operator spellings.
     #[default]
     Balanced,
-    /// Add validated arithmetic constants, ambiguous names, and separator comments.
+    /// Add strong function names, inline flow shards, arithmetic constants, and token noise.
     Maximum,
 }
 
@@ -45,6 +46,14 @@ impl Profile {
     pub(crate) fn obfuscates_arithmetic_constants(self) -> bool {
         self == Self::Maximum
     }
+
+    pub(crate) fn splits_execution_flow(self) -> bool {
+        self == Self::Maximum
+    }
+
+    pub(crate) fn uses_strong_function_names(self) -> bool {
+        self == Self::Maximum
+    }
 }
 
 /// Controls deterministic symbol renaming and source layout rendering.
@@ -58,7 +67,7 @@ pub struct Options {
     pub strip_comments: bool,
     /// Identifier spellings that must remain unchanged.
     pub preserve: BTreeSet<String>,
-    /// Strength of zero-runtime lexical obfuscation.
+    /// Strength of symbol, flow, and lexical obfuscation.
     pub profile: Profile,
 }
 
@@ -116,8 +125,8 @@ impl StdError for ObfuscationError {}
 ///
 /// Source-local macros are expanded and the resulting AST is simplified before
 /// symbol analysis. Every later phase reparses its output. Identifier edits use
-/// Tree-sitter byte ranges, while intentional arithmetic expression replacements
-/// establish the structure required by the lexical and layout phases.
+/// Tree-sitter byte ranges; maximum-profile flow shards and arithmetic
+/// expressions establish new validated AST baselines before lexical rendering.
 pub fn obfuscate(source: &str, options: &Options) -> Result<String, ObfuscationError> {
     let expanded = preprocessor::expand_local_macros(source)?;
     let simplified = simplify::simplify(&expanded)?;
@@ -133,13 +142,17 @@ pub fn obfuscate(source: &str, options: &Options) -> Result<String, ObfuscationE
         "identifier rewrite changed the syntax tree",
     )?;
 
-    let constant_edits = constants::encoding_edits(
+    let flow = flow::split(
         &renamed,
         renamed_tree.root_node(),
         options.profile,
         options.seed,
     )?;
-    let constant_rewrite = rewrite::apply_tracked(&renamed, &constant_edits)?;
+    let flow_tree = syntax::parse(&flow)?;
+
+    let constant_edits =
+        constants::encoding_edits(&flow, flow_tree.root_node(), options.profile, options.seed)?;
+    let constant_rewrite = rewrite::apply_tracked(&flow, &constant_edits)?;
     let constants = constant_rewrite.output;
     let constants_tree = syntax::parse(&constants)?;
     constants::validate_replacements(

@@ -19,6 +19,159 @@ type SymbolId = usize;
 type RenameDomainId = usize;
 type ByteRange = (usize, usize);
 
+const FUNCTION_NAME_SEED_SALT: u64 = 0xF00C_710A_5EED_4A9E;
+const STRONG_FUNCTION_NAME_LENGTH: usize = 4;
+const STD_UNQUALIFIED_CALL_HAZARDS: &[&str] = &[
+    "abs",
+    "accumulate",
+    "acos",
+    "adjacent_difference",
+    "adjacent_find",
+    "advance",
+    "all_of",
+    "any_of",
+    "apply",
+    "asin",
+    "atan",
+    "atan2",
+    "begin",
+    "binary_search",
+    "cbegin",
+    "cend",
+    "ceil",
+    "clamp",
+    "clock",
+    "copy",
+    "copy_backward",
+    "copy_if",
+    "copy_n",
+    "cos",
+    "count",
+    "count_if",
+    "crbegin",
+    "crend",
+    "data",
+    "distance",
+    "empty",
+    "end",
+    "endl",
+    "equal",
+    "equal_range",
+    "erase",
+    "erase_if",
+    "exchange",
+    "exp",
+    "fill",
+    "fill_n",
+    "find",
+    "find_end",
+    "find_first_of",
+    "find_if",
+    "find_if_not",
+    "floor",
+    "flush",
+    "for_each",
+    "forward",
+    "gcd",
+    "generate",
+    "generate_n",
+    "get",
+    "getchar",
+    "getline",
+    "includes",
+    "inner_product",
+    "inplace_merge",
+    "invoke",
+    "iota",
+    "is_heap",
+    "is_partitioned",
+    "is_permutation",
+    "iter_swap",
+    "lcm",
+    "lexicographical_compare",
+    "log",
+    "lower_bound",
+    "make_heap",
+    "make_pair",
+    "make_tuple",
+    "max",
+    "max_element",
+    "memcpy",
+    "memset",
+    "merge",
+    "midpoint",
+    "min",
+    "min_element",
+    "minmax",
+    "mismatch",
+    "move",
+    "move_backward",
+    "next",
+    "next_permutation",
+    "none_of",
+    "nth_element",
+    "partial_sort",
+    "partial_sum",
+    "partition",
+    "partition_copy",
+    "partition_point",
+    "pop_heap",
+    "pow",
+    "prev",
+    "prev_permutation",
+    "printf",
+    "push_heap",
+    "putchar",
+    "puts",
+    "rand",
+    "rbegin",
+    "reduce",
+    "remove",
+    "remove_copy",
+    "remove_copy_if",
+    "remove_if",
+    "rend",
+    "replace",
+    "replace_copy",
+    "replace_copy_if",
+    "replace_if",
+    "reverse",
+    "reverse_copy",
+    "rotate",
+    "rotate_copy",
+    "round",
+    "scanf",
+    "search",
+    "search_n",
+    "set_difference",
+    "set_intersection",
+    "set_symmetric_difference",
+    "set_union",
+    "shuffle",
+    "sin",
+    "size",
+    "sort",
+    "sqrt",
+    "srand",
+    "stable_partition",
+    "stable_sort",
+    "strcat",
+    "strcmp",
+    "strcpy",
+    "strlen",
+    "swap",
+    "swap_ranges",
+    "tan",
+    "tie",
+    "time",
+    "to_string",
+    "transform",
+    "unique",
+    "unique_copy",
+    "upper_bound",
+    "visit",
+];
+
 pub(crate) fn rename_edits(
     source: &str,
     root: Node<'_>,
@@ -28,7 +181,7 @@ pub(crate) fn rename_edits(
     analyzer.collect_source_identifiers(root);
     analyzer.collect_preprocessor_names(root)?;
     analyzer.collect_linkage_names(root, false);
-    analyzer.collect_using_namespace(root);
+    analyzer.collect_using_namespaces(root);
     analyzer.collect_declarations(root, analyzer.root_scope);
     analyzer.collect_ignored_parameter_names(root);
     analyzer.collect_references(root, analyzer.root_scope);
@@ -49,7 +202,7 @@ struct Analyzer<'source> {
     preserve_names: HashSet<String>,
     unresolved_names: HashSet<String>,
     used_names: HashSet<String>,
-    has_using_namespace: bool,
+    using_namespaces: HashSet<String>,
 }
 
 impl<'source> Analyzer<'source> {
@@ -82,7 +235,7 @@ impl<'source> Analyzer<'source> {
             preserve_names,
             unresolved_names: HashSet::new(),
             used_names: HashSet::new(),
-            has_using_namespace: false,
+            using_namespaces: HashSet::new(),
         }
     }
 
@@ -91,7 +244,8 @@ impl<'source> Analyzer<'source> {
 
         match node.kind() {
             "function_definition" => {
-                if (has_linkage || self.has_storage_class(node, "extern"))
+                if ((has_linkage || self.has_storage_class(node, "extern"))
+                    || self.function_observes_its_identity(node))
                     && let Some(declarator) = node.child_by_field_name("declarator")
                 {
                     self.force_preserve_declarator(declarator);
@@ -114,25 +268,28 @@ impl<'source> Analyzer<'source> {
         self.collect_linkage_children(node, has_linkage);
     }
 
-    fn collect_using_namespace(&mut self, node: Node<'_>) {
+    fn collect_linkage_children(&mut self, node: Node<'_>, inherited_linkage: bool) {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            self.collect_linkage_names(child, inherited_linkage);
+        }
+    }
+
+    fn collect_using_namespaces(&mut self, node: Node<'_>) {
         if node.kind() == "using_declaration"
             && self
                 .node_text(node)
                 .is_some_and(|text| text.trim_start().starts_with("using namespace"))
         {
-            self.has_using_namespace = true;
+            let components = self.identifier_texts(node);
+            if !components.is_empty() {
+                self.using_namespaces.insert(components.join("::"));
+            }
         }
 
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            self.collect_using_namespace(child);
-        }
-    }
-
-    fn collect_linkage_children(&mut self, node: Node<'_>, inherited_linkage: bool) {
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            self.collect_linkage_names(child, inherited_linkage);
+            self.collect_using_namespaces(child);
         }
     }
 
@@ -157,6 +314,27 @@ impl<'source> Analyzer<'source> {
         node.named_children(&mut cursor).any(|child| {
             child.kind() == "storage_class_specifier" && self.node_text(child) == Some(expected)
         })
+    }
+
+    fn function_observes_its_identity(&self, node: Node<'_>) -> bool {
+        node.child_by_field_name("body")
+            .is_some_and(|body| self.contains_function_identity_reference(body))
+    }
+
+    fn contains_function_identity_reference(&self, node: Node<'_>) -> bool {
+        if matches!(
+            node.kind(),
+            "identifier" | "field_identifier" | "namespace_identifier" | "type_identifier"
+        ) && self
+            .node_text(node)
+            .is_some_and(function_identity_identifier)
+        {
+            return true;
+        }
+
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .any(|child| self.contains_function_identity_reference(child))
     }
 
     fn collect_source_identifiers(&mut self, node: Node<'_>) {
@@ -257,11 +435,7 @@ impl<'source> Analyzer<'source> {
                 self.collect_children(node, scope);
             }
             "template_declaration" => {
-                let scope = self.add_scope(node, current_scope, ScopeKind::Template, true);
-                if let Some(parameters) = node.child_by_field_name("parameters") {
-                    self.collect_template_parameters(parameters, scope);
-                }
-                self.collect_children(node, scope);
+                self.collect_template_declaration(node, current_scope, current_scope);
             }
             "class_specifier" | "struct_specifier" | "union_specifier" => {
                 // Without a type system, inherited members cannot be separated
@@ -272,19 +446,7 @@ impl<'source> Analyzer<'source> {
                 self.collect_children(node, scope);
             }
             "function_definition" => {
-                let qualified = self.register_function_definition(node, current_scope);
-                let function_scope = self.add_function_scope(node, current_scope, !qualified);
-
-                if let Some(declarator) = node.child_by_field_name("declarator") {
-                    self.collect_function_parameters(declarator, function_scope);
-                }
-
-                let mut cursor = node.walk();
-                for child in node.named_children(&mut cursor) {
-                    if node_field(node, child) != Some("declarator") {
-                        self.collect_declarations(child, function_scope);
-                    }
-                }
+                self.collect_function_definition(node, current_scope, current_scope);
             }
             "lambda_expression" => {
                 self.collect_lambda(node, current_scope);
@@ -372,6 +534,59 @@ impl<'source> Analyzer<'source> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             self.collect_declarations(child, current_scope);
+        }
+    }
+
+    fn collect_template_declaration(
+        &mut self,
+        node: Node<'_>,
+        entity_scope: ScopeId,
+        lexical_parent: ScopeId,
+    ) {
+        let template_scope = self.add_scope(node, lexical_parent, ScopeKind::Template, true);
+        if let Some(parameters) = node.child_by_field_name("parameters") {
+            self.collect_template_parameters(parameters, template_scope);
+        }
+
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if node_field(node, child) == Some("parameters") {
+                continue;
+            }
+            match child.kind() {
+                "function_definition" => {
+                    self.collect_function_definition(child, entity_scope, template_scope);
+                }
+                "declaration" => {
+                    self.register_node_declarators(child, entity_scope, DeclarationContext::Value);
+                    self.collect_children(child, template_scope);
+                }
+                "template_declaration" => {
+                    self.collect_template_declaration(child, entity_scope, template_scope);
+                }
+                _ => self.collect_declarations(child, template_scope),
+            }
+        }
+    }
+
+    fn collect_function_definition(
+        &mut self,
+        node: Node<'_>,
+        declaration_scope: ScopeId,
+        lexical_parent: ScopeId,
+    ) {
+        let qualified = self.register_function_definition(node, declaration_scope);
+        let function_scope = self.add_function_scope(node, lexical_parent, !qualified);
+
+        if let Some(declarator) = node.child_by_field_name("declarator") {
+            self.collect_function_parameters(declarator, function_scope);
+        }
+
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if node_field(node, child) != Some("declarator") {
+                self.collect_declarations(child, function_scope);
+            }
         }
     }
 
@@ -649,18 +864,6 @@ impl<'source> Analyzer<'source> {
             .copied()
             .unwrap_or(inherited_scope);
 
-        if self.has_using_namespace
-            && node.kind() == "call_expression"
-            && let Some(function) = node.child_by_field_name("function")
-            && function.kind() == "identifier"
-            && let Some(name) = self.node_text(function)
-            && let LookupResult::Resolved(symbol) =
-                self.lookup(current_scope, name, function.start_byte())
-            && self.symbols[symbol].kind == SymbolKind::Function
-        {
-            self.preserve_names.insert(name.to_string());
-        }
-
         match node.kind() {
             "preproc_def"
             | "preproc_function_def"
@@ -900,6 +1103,12 @@ impl<'source> Analyzer<'source> {
 
         match self.lookup(scope, &name, node.start_byte()) {
             LookupResult::Resolved(symbol) => {
+                if self.symbols[symbol].kind == SymbolKind::Function
+                    && self.using_namespace_may_add_overload(&name)
+                {
+                    self.preserve_names.insert(name);
+                    return;
+                }
                 if self.symbols[symbol].kind != SymbolKind::Barrier {
                     self.symbols[symbol].occurrences.insert(range);
                 }
@@ -957,12 +1166,7 @@ impl<'source> Analyzer<'source> {
         // Translation-unit names are visible from function bodies, so their
         // generated spellings must remain reserved in every local domain.
         if let Some(root_candidates) = domains.remove(&0) {
-            let mut generator = NameGenerator::new(
-                options.seed,
-                self.used_names.clone(),
-                options.profile.uses_ambiguous_names(),
-            );
-            local_reserved.extend(self.assign_names(&root_candidates, &mut generator, &mut edits));
+            local_reserved.extend(self.assign_root_names(&root_candidates, options, &mut edits));
         }
 
         for candidates in domains.into_values() {
@@ -974,6 +1178,84 @@ impl<'source> Analyzer<'source> {
             self.assign_names(&candidates, &mut generator, &mut edits);
         }
         edits
+    }
+
+    fn assign_root_names(
+        &self,
+        candidates: &[SymbolId],
+        options: &Options,
+        edits: &mut Vec<TextEdit>,
+    ) -> Vec<String> {
+        if !options.profile.uses_strong_function_names() {
+            let mut generator = NameGenerator::new(
+                options.seed,
+                self.used_names.clone(),
+                options.profile.uses_ambiguous_names(),
+            );
+            return self.assign_names(candidates, &mut generator, edits);
+        }
+
+        let (functions, other): (Vec<SymbolId>, Vec<SymbolId>) = candidates
+            .iter()
+            .copied()
+            .partition(|symbol| self.symbols[*symbol].kind == SymbolKind::Function);
+        let mut generated = Vec::new();
+        let mut function_generator = NameGenerator::with_minimum_length(
+            options.seed ^ FUNCTION_NAME_SEED_SALT,
+            self.used_names.clone(),
+            true,
+            STRONG_FUNCTION_NAME_LENGTH,
+        );
+        generated.extend(self.assign_names(&functions, &mut function_generator, edits));
+
+        let mut reserved = self.used_names.clone();
+        reserved.extend(generated.iter().cloned());
+        let mut other_generator = NameGenerator::new(options.seed, reserved, true);
+        generated.extend(self.assign_names(&other, &mut other_generator, edits));
+        generated
+    }
+
+    fn using_namespace_may_add_overload(&self, function_name: &str) -> bool {
+        self.using_namespaces.iter().any(|namespace| {
+            if self.source_defines_root_namespace_path(namespace) {
+                return false;
+            }
+            namespace != "std" || STD_UNQUALIFIED_CALL_HAZARDS.contains(&function_name)
+        })
+    }
+
+    fn source_defines_root_namespace_path(&self, namespace: &str) -> bool {
+        if self
+            .namespace_scopes
+            .contains_key(&(self.root_scope, namespace.to_string()))
+        {
+            return true;
+        }
+
+        let mut components = namespace.split("::");
+        let Some(first) = components.next() else {
+            return false;
+        };
+
+        for (&(parent, ref name), &scope) in &self.namespace_scopes {
+            if parent != self.root_scope || name != first {
+                continue;
+            }
+            let mut current = scope;
+            let mut matched = true;
+            for component in components.clone() {
+                let Some(next) = self.namespace_scopes.get(&(current, component.to_string()))
+                else {
+                    matched = false;
+                    break;
+                };
+                current = *next;
+            }
+            if matched {
+                return true;
+            }
+        }
+        false
     }
 
     fn preserve_cross_scope_function_names(&mut self) {
@@ -1313,6 +1595,20 @@ fn has_named_child(node: Node<'_>, expected: &str) -> bool {
         .any(|child| child.kind() == expected)
 }
 
+fn function_identity_identifier(name: &str) -> bool {
+    matches!(
+        name,
+        "__func__"
+            | "__FUNCTION__"
+            | "__PRETTY_FUNCTION__"
+            | "__FUNCSIG__"
+            | "__FUNCDNAME__"
+            | "__builtin_FUNCTION"
+            | "assert"
+            | "source_location"
+    )
+}
+
 fn direct_type_parameter_name(node: Node<'_>) -> Option<Node<'_>> {
     if let Some(name) = node.child_by_field_name("name") {
         return Some(name);
@@ -1511,5 +1807,17 @@ int main() {
 
         assert!(output.contains("inspectValue"));
         assert!(!output.contains("inputValue"));
+    }
+
+    #[test]
+    fn distinguishes_root_and_nested_namespace_paths() {
+        let source = "namespace outer { namespace imported {} }";
+        let tree = crate::syntax::parse(source).unwrap();
+        let options = Options::default();
+        let mut analyzer = Analyzer::new(source, tree.root_node(), &options);
+        analyzer.collect_declarations(tree.root_node(), analyzer.root_scope);
+
+        assert!(!analyzer.source_defines_root_namespace_path("imported"));
+        assert!(analyzer.source_defines_root_namespace_path("outer::imported"));
     }
 }

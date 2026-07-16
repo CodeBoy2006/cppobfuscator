@@ -45,3 +45,15 @@
 - **Status:** Completed
 - **Next Steps:** Merge the feature branch into the repository default branch.
 - **Context:** The repository has no `main` branch; its local and remote default branch is named `master`.
+
+## [2026-07-16 23:00] Strong Function and Inline Flow Obfuscation
+- **Changes:** Added maximum-profile four-character ambiguous function naming, aggressive function and function-template renaming with selective using-namespace overload safety, validated inline lambda execution-flow shards, function-identity and frame-sensitive barriers, a refreshed T708557 artifact, and bilingual documentation for version 0.4.1.
+- **Status:** Completed
+- **Next Steps:** Publish v0.4.1.
+- **Context:** Sixty-nine Rust tests, Clippy with warnings denied, Rustdoc with warnings denied, and the release build pass. GCC and Clang original and maximum variants produced byte-identical 853,388-byte output on 401 deterministic trees containing 44,319 vertices. Optimized binaries retained no generated lambda call symbols; unoptimized builds may retain closure calls.
+
+## [2026-07-16 23:19] Function and Flow Release Hardening
+- **Changes:** Added whole-function flow barriers for anonymous unions and GNU label addresses, expanded varargs and frame-sensitive builtin protection, corrected root namespace path detection, and extended using-namespace overload safety to unqualified function address references.
+- **Status:** Completed
+- **Next Steps:** Publish v0.4.1.
+- **Context:** Seventy-two Rust tests now pass. A dedicated GNU C++14 edge case compiles and behaves identically before and after maximum transformation. The final deterministic T708557 artifact is unchanged and GCC/Clang original and transformed outputs retain the same SHA-256 on the 401-tree verification corpus.

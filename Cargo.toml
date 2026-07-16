@@ -1,6 +1,6 @@
 [package]
 name = "cppobfuscator"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "Low-overhead Tree-sitter obfuscator for single-file C++ contest code"
 repository = "https://github.com/CodeBoy2006/cppobfuscator"

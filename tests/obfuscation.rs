@@ -412,6 +412,176 @@ int main() { return chooseValue(domain::Value{}); }
 }
 
 #[test]
+fn renames_called_functions_despite_using_namespace_directives() {
+    let source = r#"
+using namespace std;
+void recurseValue(int depthValue) {
+    if (depthValue > 0) recurseValue(depthValue - 1);
+}
+void solveValue() {
+    recurseValue(2);
+}
+int main() {
+    solveValue();
+    return 0;
+}
+"#;
+    let options = Options {
+        profile: Profile::Symbols,
+        compact: false,
+        strip_comments: false,
+        ..Options::default()
+    };
+
+    let output = obfuscate(source, &options).unwrap();
+
+    assert!(!output.contains("recurseValue"));
+    assert!(!output.contains("solveValue"));
+    assert!(output.contains("using namespace std"));
+}
+
+#[test]
+fn preserves_common_standard_overload_hazards() {
+    let source = r#"
+using namespace std;
+int sort(int valueName) {
+    return valueName;
+}
+int main() {
+    return sort(1);
+}
+"#;
+    let options = Options {
+        profile: Profile::Symbols,
+        compact: false,
+        strip_comments: false,
+        ..Options::default()
+    };
+
+    let output = obfuscate(source, &options).unwrap();
+
+    assert_eq!(output.matches("sort").count(), 2);
+    assert!(!output.contains("valueName"));
+}
+
+#[test]
+fn preserves_using_namespace_hazards_when_taking_function_addresses() {
+    let source = r#"
+using namespace std;
+int sort(int valueName) {
+    return valueName;
+}
+int main() {
+    int (*functionPointer)(int) = &sort;
+    return functionPointer(1);
+}
+"#;
+    let options = Options {
+        profile: Profile::Symbols,
+        compact: false,
+        strip_comments: false,
+        ..Options::default()
+    };
+
+    let output = obfuscate(source, &options).unwrap();
+
+    assert_eq!(output.matches("sort").count(), 2);
+    assert!(!output.contains("valueName"));
+    assert!(!output.contains("functionPointer"));
+}
+
+#[test]
+fn preserves_functions_that_observe_their_own_identity() {
+    let source = r#"
+int identityFunction() {
+    return __func__[0];
+}
+int main() {
+    return identityFunction();
+}
+"#;
+    let options = Options {
+        profile: Profile::Maximum,
+        compact: false,
+        strip_comments: false,
+        ..Options::default()
+    };
+
+    let output = obfuscate(source, &options).unwrap();
+
+    assert_eq!(output.matches("identityFunction").count(), 2);
+}
+
+#[test]
+fn renames_function_templates_in_the_enclosing_scope() {
+    let source = r#"
+template <class TypeValue>
+TypeValue transformValue(TypeValue inputValue) {
+    return inputValue + 1;
+}
+int main() {
+    return transformValue(2);
+}
+"#;
+    let options = Options {
+        profile: Profile::Symbols,
+        compact: false,
+        strip_comments: false,
+        ..Options::default()
+    };
+
+    let output = obfuscate(source, &options).unwrap();
+
+    for original in ["TypeValue", "transformValue", "inputValue"] {
+        assert!(!output.contains(original), "{original} was not renamed");
+    }
+}
+
+#[test]
+fn maximum_profile_uses_strong_function_names_and_inline_flow_shards() {
+    let source = r#"
+using namespace std;
+void helperFunction(int& valueName) {
+    valueName += 1;
+    valueName *= 2;
+}
+int main() {
+    int resultName = 3;
+    helperFunction(resultName);
+    return resultName;
+}
+"#;
+    let options = Options {
+        profile: Profile::Maximum,
+        compact: false,
+        strip_comments: false,
+        ..Options::default()
+    };
+
+    let output = obfuscate(source, &options).unwrap();
+    let generated_function = output
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix("void "))
+        .and_then(|tail| tail.split('(').next())
+        .expect("generated helper function");
+
+    assert!(!output.contains("helperFunction"));
+    assert!(!output.contains("valueName"));
+    assert!(!output.contains("resultName"));
+    assert!(generated_function.len() >= 4);
+    assert!(
+        generated_function
+            .chars()
+            .all(|character| matches!(character, 'i' | 'l' | 'o' | '0' | '1'))
+    );
+    assert!(output.contains("[&]"));
+    assert_eq!(
+        source.bytes().filter(|byte| *byte == b'\n').count(),
+        output.bytes().filter(|byte| *byte == b'\n').count()
+    );
+}
+
+#[test]
 fn maximum_profile_handles_alternative_assignment_operators() {
     let source = r#"
 int main() {

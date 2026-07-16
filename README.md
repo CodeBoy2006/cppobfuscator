@@ -13,19 +13,20 @@ included headers, invoke a compiler preprocessor, or use global text replacement
 
 ## Profiles
 
-`0.4` provides three deterministic profiles:
+`0.4.1` provides three deterministic profiles:
 
 | Profile | Transformations |
 | --- | --- |
 | `symbols` | Rename resolved variables, free functions, template parameters, and labels; compact layout and remove source comments as configured. |
 | `balanced` | Default. Adds per-function short-name reuse, safe integer radix changes, ASCII string/character octal escapes, and C++ alternative operator tokens. |
-| `maximum` | Adds validated compile-time arithmetic encoding for eligible integers, visually ambiguous `i/l/o/0/1` names, and separator comments between non-preprocessor tokens. |
+| `maximum` | Adds four-or-more-character ambiguous function names, validated arithmetic integers, deterministic inline lambda flow shards, and separator comments between non-preprocessor tokens. |
 
-The advanced profiles only change compile-time source representation. They do
-not add runtime decoders, opaque branches, control-flow dispatchers, heap
-allocations, or initialization work. A representative calculation kernel
-produces byte-identical GCC and Clang assembly at both `-O0` and `-O2` before
-and after maximum transformation.
+Balanced transformations only change compile-time source representation.
+Maximum flow sharding creates local capture lambdas, but adds no runtime
+decoder, opaque branch, state machine, heap allocation, or persistent state.
+GCC and Clang fully inline representative shards at `-O2`; unoptimized builds
+may retain local lambda calls, so generated code must be tested with the target
+contest flags.
 
 ## Pipeline
 
@@ -41,13 +42,15 @@ and after maximum transformation.
 6. Build lexical scopes, declaration points, overload groups, template
    parameters, labels, and identifier references.
 7. Apply non-overlapping symbol edits and reparse.
-8. Replace eligible maximum-profile integer leaves with tracked arithmetic
+8. In maximum mode, split eligible expression-statement runs into validated
+   immediately invoked lambda shards while preserving physical lines.
+9. Replace eligible maximum-profile integer leaves with tracked arithmetic
    expression subtrees, verify each generated decoder, and reparse.
-9. Establish the intentional post-constant AST as the validation baseline,
+10. Establish the intentional post-constant AST as the validation baseline,
    then rewrite safe literal spellings and expression operators.
-10. Remove source comments and render compact layout while preserving every
+11. Remove source comments and render compact layout while preserving every
    physical newline and macro continuation.
-11. Reparse and require the normalized non-comment AST structure to match the
+12. Reparse and require the normalized non-comment AST structure to match the
    validated post-constant baseline.
 
 ## Pre-obfuscation normalization
@@ -79,7 +82,7 @@ The analyzer renames:
 
 - Local, file, and namespace variables with unambiguous lexical references.
 - Function parameters, structured bindings, and lambda init-captures.
-- Ordinary free functions and same-scope overload groups.
+- Ordinary free functions, function templates, and same-scope overload groups.
 - Type and non-type template parameters, including dependent qualified uses.
 - Standard `goto` labels and their references.
 
@@ -88,17 +91,45 @@ Names remain unchanged when correctness cannot be established:
 - `main`, explicit `--preserve` names, reserved or unresolved identifiers.
 - Types, namespaces, fields, methods, operators, enum constants, and qualified
   member names.
-- External linkage, language linkage, and friend-declared functions.
+- Explicit `extern`, language-linkage, and friend-declared functions.
 - Macro names and non-parameter identifiers used by macro replacement text.
-- Cross-scope same-name functions and source functions called while a
-  `using namespace` directive can extend the overload set.
+- Functions that observe their own name through `__func__`,
+  `__PRETTY_FUNCTION__`, compiler equivalents, or `std::source_location`.
+- Cross-scope same-name functions, common standard-library overload hazards
+  imported by `using namespace std`, and calls exposed by an unmodeled external
+  namespace directive.
 - Bare outer-scope names in classes with base classes, where inherited member
   lookup requires compiler semantics.
 
 Balanced and maximum profiles reuse the same local short names in independent
-functions while reserving every generated translation-unit name. Maximum uses
-an ambiguous lowercase alphabet; generated names never collide with identifiers
-present in the source.
+functions while reserving every generated translation-unit name. Maximum puts
+functions in a separate deterministic name domain with a minimum length of four
+characters from the ambiguous `i/l/o/0/1` alphabet; generated names never
+collide with identifiers present in the source.
+
+## Function and flow obfuscation
+
+- Source-local free functions are renamed consistently across definitions,
+  forward declarations, recursion, calls, address-taking expressions, explicit
+  template specializations, and explicit instantiations.
+- Template function entities are registered in their enclosing namespace while
+  template parameters remain in their lexical template scope. This lets called
+  function templates be renamed without losing dependent-name lookup.
+- Maximum partitions consecutive eligible expression statements into
+  deterministic one-to-three-statement shards such as
+  `([&](){ first(); second(); }());`. Lambdas are implicitly inline and each
+  generated range is required to parse as one exact invocation node.
+- Declarations and `return`, `break`, `continue`, `goto`, labels, and `case`
+  entries are never moved into a shard. Existing lambda bodies are not rewritten.
+- Entire functions are excluded when they are `constexpr`/`consteval`,
+  variadic, coroutine-based, contain structured bindings or preprocessing
+  directives, anonymous unions, GNU label addresses, use SEH or `register`, or
+  depend on `alloca`, setjmp/longjmp, varargs, frame-address, return-address, or
+  function-identity facilities. GNU asm, requires expressions, and statement
+  expressions are excluded at the individual-statement level.
+- At `-O2`, the tested GCC and Clang outputs contain no residual lambda call
+  symbols. At `-O0`, compilers may materialize closure frames and calls; maximum
+  is intended for optimized contest builds.
 
 ## Lexical obfuscation
 
@@ -130,10 +161,10 @@ continues to observe the original line numbering. `--keep-layout` disables
 compaction and separator-comment insertion.
 
 Balanced and maximum output requires C++14 or later because binary integer
-literals may be emitted. Maximum arithmetic encoding can substantially expand
-the source file, but it does not inject helper functions or runtime state. It
-raises manual analysis cost; a compiler or dedicated constant folder can still
-reduce the generated expressions.
+literals may be emitted. Maximum arithmetic encoding and flow shards can
+substantially expand the source file. The shards create local closure
+expressions but no heap allocation or persistent runtime state. A compiler or
+dedicated constant folder can still reduce generated arithmetic expressions.
 
 ## Macro boundaries
 
@@ -146,7 +177,8 @@ reduce the generated expressions.
 - Backslash continuations and all physical line counts remain stable.
 
 Header-provided macros, full conditional preprocessing, compiler extensions,
-and full ADL/type lookup remain outside the model.
+and full ADL/type lookup remain outside the model. Maximum cannot inspect
+function-identity or stack-frame effects hidden inside a header macro.
 
 ## CLI
 

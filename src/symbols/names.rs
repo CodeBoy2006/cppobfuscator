@@ -44,6 +44,15 @@ pub(super) struct NameGenerator {
 
 impl NameGenerator {
     pub fn new(seed: u64, used: HashSet<String>, ambiguous: bool) -> Self {
+        Self::with_minimum_length(seed, used, ambiguous, 1)
+    }
+
+    pub fn with_minimum_length(
+        seed: u64,
+        used: HashSet<String>,
+        ambiguous: bool,
+        minimum_length: usize,
+    ) -> Self {
         let mut rng = SplitMix64::new(seed);
         let (mut first, mut rest): (Vec<char>, Vec<char>) = if ambiguous {
             ("ilo".chars().collect(), "ilo01".chars().collect())
@@ -57,12 +66,16 @@ impl NameGenerator {
         if !ambiguous {
             rest.extend("0123456789".chars());
         }
-        Self {
+        let mut generator = Self {
             index: 0,
             first,
             rest,
             used,
+        };
+        while generator.name_at(generator.index).len() < minimum_length.max(1) {
+            generator.index += 1;
         }
+        generator
     }
 
     pub fn next_name(&mut self) -> String {
@@ -211,3 +224,17 @@ const CPP_KEYWORDS: &[&str] = &[
     "xor",
     "xor_eq",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn supports_minimum_length_for_strong_names() {
+        let mut generator = NameGenerator::with_minimum_length(7, HashSet::new(), true, 4);
+
+        for _ in 0..32 {
+            assert!(generator.next_name().len() >= 4);
+        }
+    }
+}
