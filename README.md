@@ -18,12 +18,13 @@ does not use global text replacement.
 | --- | --- |
 | `symbols` | Rename resolved variables, free functions, template parameters, and labels; compact layout and remove source comments as configured. |
 | `balanced` | Default. Adds per-function short-name reuse, safe integer radix changes, ASCII string/character octal escapes, and C++ alternative operator tokens. |
-| `maximum` | Adds visually ambiguous `i/l/o/0/1` names and validated separator comments between non-preprocessor tokens. |
+| `maximum` | Adds validated compile-time arithmetic encoding for eligible integers, visually ambiguous `i/l/o/0/1` names, and separator comments between non-preprocessor tokens. |
 
 The advanced profiles only change compile-time source representation. They do
 not add runtime decoders, opaque branches, control-flow dispatchers, heap
 allocations, or initialization work. A representative calculation kernel
-produces byte-identical `g++ -O2` assembly before and after transformation.
+produces byte-identical GCC and Clang assembly at both `-O0` and `-O2` before
+and after maximum transformation.
 
 ## Pipeline
 
@@ -33,10 +34,14 @@ produces byte-identical `g++ -O2` assembly before and after transformation.
 3. Build lexical scopes, declaration points, overload groups, template
    parameters, labels, and identifier references.
 4. Apply non-overlapping symbol edits and reparse.
-5. Rewrite safe literals and expression operator spellings and reparse.
-6. Remove source comments and render compact layout while preserving every
+5. Replace eligible maximum-profile integer leaves with tracked arithmetic
+   expression subtrees, verify each generated decoder, and reparse.
+6. Establish the intentional post-constant AST as the validation baseline,
+   then rewrite safe literal spellings and expression operators.
+7. Remove source comments and render compact layout while preserving every
    physical newline and macro continuation.
-7. Reparse and require the normalized non-comment AST structure to match.
+8. Reparse and require the normalized non-comment AST structure to match the
+   validated post-constant baseline.
 
 ## Symbol obfuscation
 
@@ -70,8 +75,18 @@ present in the source.
 - Integer literals within the signed 32-bit range may be rendered in binary,
   octal, or hexadecimal while preserving their suffix. Floating literals,
   large integers, and user-defined literals are left unchanged.
+- Maximum additionally replaces eligible non-zero integers with one of three
+  deterministic expression families: 32-bit affine multiplication with an odd
+  modular inverse, rotated affine decoding, or masked bit splitting. Operations
+  are performed in `unsigned long long` with explicit 32-bit masks, and the
+  result is cast back to the literal's exact built-in type.
+- Integer zero remains a literal because C++ gives zero-valued integer literals
+  null-pointer semantics that equivalent constant expressions do not retain.
+  C++23 size suffixes are also excluded from arithmetic encoding.
 - Direct printable ASCII string content is encoded with fixed-width octal
-  escapes. Existing escapes, raw strings, and non-ASCII text remain intact.
+  escapes. Existing escapes, raw strings, non-ASCII text, language-linkage
+  strings, `static_assert` messages, attribute text, and GNU asm strings remain
+  intact.
 - Direct printable ASCII character literals use octal escapes.
 - Expression operators may use `and`, `or`, `not`, `bitand`, `bitor`, `xor`,
   `compl`, `and_eq`, `or_eq`, `xor_eq`, and `not_eq`. Pointer/reference syntax
@@ -85,7 +100,10 @@ continues to observe the original line numbering. `--keep-layout` disables
 compaction and separator-comment insertion.
 
 Balanced and maximum output requires C++14 or later because binary integer
-literals may be emitted.
+literals may be emitted. Maximum arithmetic encoding can substantially expand
+the source file, but it does not inject helper functions or runtime state. It
+raises manual analysis cost; a compiler or dedicated constant folder can still
+reduce the generated expressions.
 
 ## Macro boundaries
 

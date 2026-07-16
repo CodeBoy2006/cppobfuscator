@@ -1,6 +1,7 @@
 use tree_sitter::Node;
 
 use crate::Profile;
+use crate::integer::{IntegerLiteral, Radix};
 use crate::random::SplitMix64;
 use crate::rewrite::TextEdit;
 
@@ -35,7 +36,9 @@ fn collect_edits(
 
     let replacement = match node.kind() {
         "number_literal" => integer_replacement(node_text(node, source), rng),
-        "string_content" => string_content_replacement(node_text(node, source), profile, rng),
+        "string_content" if !is_syntax_sensitive_string(node) => {
+            string_content_replacement(node_text(node, source), profile, rng)
+        }
         "character" => character_replacement(node_text(node, source)),
         _ if node.child_count() == 0 => operator_replacement(node),
         _ => None,
@@ -54,6 +57,25 @@ fn collect_edits(
     for child in node.children(&mut cursor) {
         collect_edits(child, source, profile, false, rng, edits);
     }
+}
+
+fn is_syntax_sensitive_string(node: Node<'_>) -> bool {
+    let mut ancestor = node.parent();
+    while let Some(parent) = ancestor {
+        if matches!(
+            parent.kind(),
+            "static_assert_declaration"
+                | "linkage_specification"
+                | "attribute"
+                | "attribute_declaration"
+                | "attribute_specifier"
+                | "gnu_asm_expression"
+        ) {
+            return true;
+        }
+        ancestor = parent.parent();
+    }
+    false
 }
 
 fn integer_replacement(text: &str, rng: &mut SplitMix64) -> Option<String> {
@@ -136,88 +158,9 @@ fn node_text<'source>(node: Node<'_>, source: &'source str) -> &'source str {
     node.utf8_text(source.as_bytes()).unwrap_or_default()
 }
 
-struct IntegerLiteral<'source> {
-    value: u128,
-    suffix: &'source str,
-}
-
-impl<'source> IntegerLiteral<'source> {
-    fn parse(text: &'source str) -> Option<Self> {
-        if text.starts_with(['+', '-']) {
-            return None;
-        }
-
-        let (radix, digits_start, valid_digit): (u32, usize, fn(char) -> bool) =
-            if text.starts_with("0x") || text.starts_with("0X") {
-                (16, 2, |character| character.is_ascii_hexdigit())
-            } else if text.starts_with("0b") || text.starts_with("0B") {
-                (2, 2, |character| matches!(character, '0' | '1'))
-            } else if text.starts_with('0') && text.len() > 1 {
-                (8, 1, |character| matches!(character, '0'..='7'))
-            } else {
-                (10, 0, |character| character.is_ascii_digit())
-            };
-
-        let mut digits_end = digits_start;
-        for (offset, character) in text[digits_start..].char_indices() {
-            if valid_digit(character) || character == '\'' {
-                digits_end = digits_start + offset + character.len_utf8();
-            } else {
-                break;
-            }
-        }
-        if digits_end == digits_start {
-            return None;
-        }
-
-        let suffix = &text[digits_end..];
-        if !valid_integer_suffix(suffix) {
-            return None;
-        }
-        let digits: String = text[digits_start..digits_end]
-            .chars()
-            .filter(|character| *character != '\'')
-            .collect();
-        let value = u128::from_str_radix(&digits, radix).ok()?;
-        Some(Self { value, suffix })
-    }
-
-    fn render(&self, radix: Radix) -> String {
-        let (prefix, digits) = match radix {
-            Radix::Binary => ("0b", format!("{:b}", self.value)),
-            Radix::Octal => ("0", format!("{:o}", self.value)),
-            Radix::Hexadecimal => ("0x", format!("{:x}", self.value)),
-        };
-        format!("{prefix}{digits}{}", self.suffix)
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Radix {
-    Binary,
-    Octal,
-    Hexadecimal,
-}
-
-fn valid_integer_suffix(suffix: &str) -> bool {
-    matches!(
-        suffix.to_ascii_lowercase().as_str(),
-        "" | "u" | "l" | "ul" | "lu" | "ll" | "ull" | "llu" | "z" | "uz" | "zu"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_integer_suffixes_without_touching_floats() {
-        let literal = IntegerLiteral::parse("1'024ULL").unwrap();
-        assert_eq!(literal.value, 1024);
-        assert_eq!(literal.suffix, "ULL");
-        assert!(IntegerLiteral::parse("1.5").is_none());
-        assert!(IntegerLiteral::parse("2'000_score").is_none());
-    }
 
     #[test]
     fn encodes_ascii_literal_content() {

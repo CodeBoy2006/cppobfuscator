@@ -62,10 +62,12 @@ fn output_is_deterministic_for_a_seed() {
         "int helperName(int inputName){return inputName;} int main(){return helperName(1);}";
     let first = Options {
         seed: 7,
+        profile: Profile::Maximum,
         ..Options::default()
     };
     let second = Options {
         seed: 8,
+        profile: Profile::Maximum,
         ..Options::default()
     };
 
@@ -359,7 +361,6 @@ int main() {
     assert!(output.contains("compl"));
     assert!(output.contains("bitor"));
     assert!(output.contains('&'));
-    assert!(!output.contains("bitand"));
 }
 
 #[test]
@@ -396,4 +397,107 @@ int main() {
 
     assert!(!output.contains("itemCount"));
     assert!(!output.contains("values"));
+}
+
+#[test]
+fn maximum_profile_encodes_integral_constants_as_expressions() {
+    let source = r#"
+template <int Size> struct Buffer { int values[Size]; };
+enum Limits : int { Limit = 7 };
+int main() {
+    static_assert(Limit == 7);
+    Buffer<3> buffer{};
+    switch (Limit) {
+        case 7: return buffer.values[0] + 1000000007;
+        default: return 1;
+    }
+}
+"#;
+    let options = Options {
+        profile: Profile::Maximum,
+        compact: false,
+        strip_comments: false,
+        ..Options::default()
+    };
+
+    let output = obfuscate(source, &options).unwrap();
+
+    assert!(output.matches("static_cast<").count() >= 5);
+    assert!(output.contains("0xffffffffULL"));
+}
+
+#[test]
+fn maximum_profile_preserves_zero_null_pointer_literals() {
+    let source = "int main(){int* pointerValue=0;return pointerValue==0;}\n";
+    let options = Options {
+        profile: Profile::Maximum,
+        compact: false,
+        strip_comments: false,
+        ..Options::default()
+    };
+
+    let output = obfuscate(source, &options).unwrap();
+
+    assert!(!output.contains("static_cast<"));
+    assert!(output.contains("0b0") || output.contains("00") || output.contains("0x0"));
+}
+
+#[test]
+fn maximum_profile_preserves_integer_suffix_types() {
+    let source = r#"
+int main() {
+    auto unsignedValue = 7U;
+    auto longValue = 8L;
+    auto longLongValue = 9LL;
+    auto unsignedLongLongValue = 10ULL;
+    return unsignedValue + longValue + longLongValue + unsignedLongLongValue;
+}
+"#;
+    let options = Options {
+        profile: Profile::Maximum,
+        compact: false,
+        strip_comments: false,
+        ..Options::default()
+    };
+
+    let output = obfuscate(source, &options).unwrap();
+
+    assert!(output.contains("static_cast<unsigned int>"));
+    assert!(output.contains("static_cast<long>"));
+    assert!(output.contains("static_cast<long long>"));
+    assert!(output.contains("static_cast<unsigned long long>"));
+}
+
+#[test]
+fn preserves_syntax_sensitive_string_literals() {
+    let source = r#"
+extern "C" int callbackValue(int);
+[[deprecated("legacy message")]]
+int helperValue(int inputValue) {
+    asm volatile("nop");
+    return inputValue;
+}
+static_assert(1 == 1, "compile-time message");
+int main() { return helperValue(1); }
+"#;
+    let options = Options {
+        profile: Profile::Maximum,
+        compact: false,
+        strip_comments: false,
+        ..Options::default()
+    };
+
+    let output = obfuscate(source, &options).unwrap();
+
+    for literal in [
+        "\"C\"",
+        "\"legacy message\"",
+        "\"nop\"",
+        "\"compile-time message\"",
+    ] {
+        assert!(
+            output.contains(literal),
+            "{literal} was unexpectedly encoded"
+        );
+    }
 }

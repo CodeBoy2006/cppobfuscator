@@ -1,4 +1,6 @@
 mod compact;
+mod constants;
+mod integer;
 mod lexical;
 mod random;
 mod rewrite;
@@ -17,7 +19,7 @@ pub enum Profile {
     /// Also obfuscate literals and expression operator spellings.
     #[default]
     Balanced,
-    /// Maximize lexical density with ambiguous names and separator comments.
+    /// Add validated arithmetic constants, ambiguous names, and separator comments.
     Maximum,
 }
 
@@ -35,6 +37,10 @@ impl Profile {
     }
 
     pub(crate) fn uses_ambiguous_names(self) -> bool {
+        self == Self::Maximum
+    }
+
+    pub(crate) fn obfuscates_arithmetic_constants(self) -> bool {
         self == Self::Maximum
     }
 }
@@ -107,7 +113,8 @@ impl StdError for ObfuscationError {}
 /// Obfuscates one UTF-8 C++ translation unit.
 ///
 /// The source is parsed before each phase. Identifier edits use Tree-sitter byte
-/// ranges, and the final trees must retain the original non-comment structure.
+/// ranges. The arithmetic-constant phase validates each intentional expression
+/// replacement before establishing the structure required by later phases.
 pub fn obfuscate(source: &str, options: &Options) -> Result<String, ObfuscationError> {
     let original_tree = syntax::parse(source)?;
     let original_signature = syntax::signature(original_tree.root_node());
@@ -121,16 +128,32 @@ pub fn obfuscate(source: &str, options: &Options) -> Result<String, ObfuscationE
         "identifier rewrite changed the syntax tree",
     )?;
 
-    let lexical_edits = lexical::obfuscation_edits(
+    let constant_edits = constants::encoding_edits(
         &renamed,
         renamed_tree.root_node(),
         options.profile,
         options.seed,
+    )?;
+    let constant_rewrite = rewrite::apply_tracked(&renamed, &constant_edits)?;
+    let constants = constant_rewrite.output;
+    let constants_tree = syntax::parse(&constants)?;
+    constants::validate_replacements(
+        &constants,
+        constants_tree.root_node(),
+        &constant_rewrite.replacement_ranges,
+    )?;
+    let expected_signature = syntax::signature(constants_tree.root_node());
+
+    let lexical_edits = lexical::obfuscation_edits(
+        &constants,
+        constants_tree.root_node(),
+        options.profile,
+        options.seed,
     );
-    let lexical = rewrite::apply(&renamed, &lexical_edits)?;
+    let lexical = rewrite::apply(&constants, &lexical_edits)?;
     let lexical_tree = syntax::parse(&lexical)?;
     syntax::ensure_same_structure(
-        &original_signature,
+        &expected_signature,
         lexical_tree.root_node(),
         "lexical rewrite changed the syntax tree",
     )?;
@@ -145,7 +168,7 @@ pub fn obfuscate(source: &str, options: &Options) -> Result<String, ObfuscationE
     )?;
     let output_tree = syntax::parse(&output)?;
     syntax::ensure_same_structure(
-        &original_signature,
+        &expected_signature,
         output_tree.root_node(),
         "layout compaction changed the syntax tree",
     )?;

@@ -47,6 +47,11 @@ pub(crate) fn ensure_same_structure(
     }
 }
 
+pub(crate) fn exact_named_node(node: Node<'_>, start: usize, end: usize) -> Option<Node<'_>> {
+    let descendant = node.named_descendant_for_byte_range(start, end)?;
+    (descendant.start_byte() == start && descendant.end_byte() == end).then_some(descendant)
+}
+
 fn append_signature(node: Node<'_>, field: Option<&str>, output: &mut String) {
     if node.kind() == "comment" {
         return;

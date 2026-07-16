@@ -9,7 +9,19 @@ pub(crate) struct TextEdit {
     pub replacement: String,
 }
 
+pub(crate) struct AppliedEdits {
+    pub output: String,
+    pub replacement_ranges: Vec<(usize, usize)>,
+}
+
 pub(crate) fn apply(source: &str, edits: &[TextEdit]) -> Result<String, ObfuscationError> {
+    Ok(apply_tracked(source, edits)?.output)
+}
+
+pub(crate) fn apply_tracked(
+    source: &str,
+    edits: &[TextEdit],
+) -> Result<AppliedEdits, ObfuscationError> {
     let mut normalized = BTreeMap::<(usize, usize), &str>::new();
     for edit in edits {
         validate_range(source, edit.start, edit.end)?;
@@ -34,11 +46,22 @@ pub(crate) fn apply(source: &str, edits: &[TextEdit]) -> Result<String, Obfuscat
         previous_end = end;
     }
 
-    let mut output = source.to_string();
-    for (&(start, end), replacement) in normalized.iter().rev() {
-        output.replace_range(start..end, replacement);
+    let mut output = String::with_capacity(source.len());
+    let mut replacement_ranges = Vec::with_capacity(normalized.len());
+    let mut cursor = 0;
+    for (&(start, end), replacement) in &normalized {
+        output.push_str(&source[cursor..start]);
+        let output_start = output.len();
+        output.push_str(replacement);
+        replacement_ranges.push((output_start, output.len()));
+        cursor = end;
     }
-    Ok(output)
+    output.push_str(&source[cursor..]);
+
+    Ok(AppliedEdits {
+        output,
+        replacement_ranges,
+    })
 }
 
 fn validate_range(source: &str, start: usize, end: usize) -> Result<(), ObfuscationError> {
@@ -101,5 +124,28 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error, ObfuscationError::InvalidEdit(_)));
+    }
+
+    #[test]
+    fn tracks_replacement_ranges_in_the_output() {
+        let result = apply_tracked(
+            "alpha beta",
+            &[
+                TextEdit {
+                    start: 0,
+                    end: 5,
+                    replacement: "x".to_string(),
+                },
+                TextEdit {
+                    start: 6,
+                    end: 10,
+                    replacement: "long".to_string(),
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(result.output, "x long");
+        assert_eq!(result.replacement_ranges, vec![(0, 1), (2, 6)]);
     }
 }
