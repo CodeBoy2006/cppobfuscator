@@ -571,6 +571,11 @@ impl<'source> Analyzer<'source> {
         }
 
         let kind = match info.entity {
+            EntityKind::Function
+                if self.declarator_is_direct_initializer(declarator, current_scope) =>
+            {
+                SymbolKind::Variable
+            }
             EntityKind::Function => SymbolKind::Function,
             EntityKind::Variable | EntityKind::Unknown => SymbolKind::Variable,
         };
@@ -797,10 +802,68 @@ impl<'source> Analyzer<'source> {
             LookupResult::Resolved(symbol) => {
                 self.symbols[symbol].occurrences.insert(range);
             }
-            LookupResult::Ambiguous | LookupResult::Missing if preserve_if_missing => {
+            LookupResult::Missing => {
+                if let Some(symbol) = self.direct_initializer_value_symbol(node, scope) {
+                    self.symbols[symbol].occurrences.insert(range);
+                } else if preserve_if_missing {
+                    self.preserve_names.insert(name);
+                }
+            }
+            LookupResult::Ambiguous if preserve_if_missing => {
                 self.preserve_names.insert(name);
             }
-            LookupResult::Ambiguous | LookupResult::Missing => {}
+            LookupResult::Ambiguous => {}
+        }
+    }
+
+    fn declarator_is_direct_initializer(&self, declarator: Node<'_>, scope: ScopeId) -> bool {
+        if declarator.kind() != "function_declarator" {
+            return false;
+        }
+        let Some(parameters) = declarator.child_by_field_name("parameters") else {
+            return false;
+        };
+
+        let mut cursor = parameters.walk();
+        parameters.named_children(&mut cursor).any(|parameter| {
+            parameter
+                .child_by_field_name("type")
+                .is_some_and(|node| self.direct_initializer_value_symbol(node, scope).is_some())
+        })
+    }
+
+    fn direct_initializer_value_symbol(&self, node: Node<'_>, scope: ScopeId) -> Option<SymbolId> {
+        if node.kind() != "type_identifier" {
+            return None;
+        }
+        let parameter = node.parent()?;
+        if !matches!(
+            parameter.kind(),
+            "parameter_declaration"
+                | "optional_parameter_declaration"
+                | "variadic_parameter_declaration"
+        ) || parameter.child_by_field_name("type") != Some(node)
+            || parameter.child_by_field_name("declarator").is_some()
+        {
+            return None;
+        }
+
+        let parameters = parameter.parent()?;
+        let declarator = parameters.parent()?;
+        let declaration = declarator.parent()?;
+        if parameters.kind() != "parameter_list"
+            || declarator.kind() != "function_declarator"
+            || declarator.child_by_field_name("parameters") != Some(parameters)
+            || declaration.kind() != "declaration"
+            || node_field(declaration, declarator) != Some("declarator")
+        {
+            return None;
+        }
+
+        let name = self.node_text(node)?;
+        match self.lookup_kind(scope, name, node.start_byte(), SymbolKind::Variable) {
+            LookupResult::Resolved(symbol) => Some(symbol),
+            LookupResult::Ambiguous | LookupResult::Missing => None,
         }
     }
 

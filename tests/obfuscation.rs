@@ -376,3 +376,24 @@ fn maximum_profile_keeps_division_comment_boundaries_safe() {
     assert!(!output.contains("//**/"));
     assert!(!output.contains("//*_*/"));
 }
+
+#[test]
+fn maximum_profile_renames_single_argument_direct_initializers() {
+    let source = r#"
+#include <vector>
+int main() {
+    int itemCount = 3;
+    std::vector<int> values(itemCount);
+    return static_cast<int>(values.size());
+}
+"#;
+    let options = Options {
+        profile: Profile::Maximum,
+        ..Options::default()
+    };
+
+    let output = obfuscate(source, &options).unwrap();
+
+    assert!(!output.contains("itemCount"));
+    assert!(!output.contains("values"));
+}
