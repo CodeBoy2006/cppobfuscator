@@ -1,118 +1,58 @@
 mod config;
-mod lexer;
-mod obfuscate;
-mod preprocess;
-mod semantics;
 
-use std::io::{self, BufRead, Read, Write};
+use std::fs;
+use std::io::{self, Read, Write};
 
-use config::Config;
-use obfuscate::{obfuscate, ObfuscateConfig};
+use config::{Command, Config};
+use cppobfuscator::obfuscate;
 
 fn main() {
-    let config = match Config::parse() {
-        Ok(cfg) => cfg,
-        Err(msg) => {
-            if msg == Config::usage() {
-                println!("{msg}");
-                return;
-            }
-            eprintln!("{msg}");
-            std::process::exit(1);
-        }
-    };
-
-    let mut simple_names = config.simple_names;
-    let mut constlift = config.constlift;
-
-    let mut input = if config.wizard {
-        let stdin = io::stdin();
-        let mut handle = stdin.lock();
-        if !simple_names && prompt_simple_names(&mut handle) {
-            simple_names = true;
-            constlift = false;
-        }
-        read_wizard_input(&mut handle, &config.wizard_end)
-    } else if let Some(path) = config.input.as_ref() {
-        std::fs::read_to_string(path).unwrap_or_else(|err| {
-            eprintln!("Failed to read {}: {err}", path.display());
-            std::process::exit(1);
-        })
-    } else {
-        let mut buffer = String::new();
-        if let Err(err) = io::stdin().read_to_string(&mut buffer) {
-            eprintln!("Failed to read stdin: {err}");
-            std::process::exit(1);
-        }
-        buffer
-    };
-
-    if config.expand_macros {
-        input = preprocess::expand_macros(&input);
-    }
-
-    let obfuscate_config = ObfuscateConfig {
-        seed: config.seed,
-        rename: config.rename,
-        minify: config.minify,
-        inline: config.inline,
-        constlift,
-        strip_comments: config.strip_comments,
-        strip_unused_macros: config.strip_unused_macros,
-        strip_unused_functions: config.strip_unused_functions,
-        strip_unused_globals: config.strip_unused_globals,
-        preserve: config.preserve,
-        simple_names,
-    };
-
-    let output = obfuscate(&input, &obfuscate_config);
-
-    if let Some(path) = config.output.as_ref() {
-        if let Err(err) = std::fs::write(path, output) {
-            eprintln!("Failed to write {}: {err}", path.display());
-            std::process::exit(1);
-        }
-    } else {
-        let mut stdout = io::stdout();
-        if let Err(err) = stdout.write_all(output.as_bytes()) {
-            eprintln!("Failed to write stdout: {err}");
-            std::process::exit(1);
-        }
+    if let Err(message) = run() {
+        eprintln!("cppobfuscator: {message}");
+        std::process::exit(1);
     }
 }
 
-fn read_wizard_input(handle: &mut dyn BufRead, marker: &str) -> String {
-    eprintln!("Wizard mode: paste C++ code, end with line: {marker}");
-    eprintln!("Press Ctrl-D to finish early.");
-
-    let mut input = String::new();
-    let mut line = String::new();
-
-    loop {
-        line.clear();
-        let bytes = handle.read_line(&mut line).unwrap_or_else(|err| {
-            eprintln!("Failed to read stdin: {err}");
-            std::process::exit(1);
-        });
-        if bytes == 0 {
-            break;
+fn run() -> Result<(), String> {
+    let command = Config::parse()?;
+    let config = match command {
+        Command::Help => {
+            print!("{}", Config::usage());
+            return Ok(());
         }
-        let trimmed = line.trim_end_matches(|c| c == '\n' || c == '\r');
-        if trimmed == marker {
-            break;
+        Command::Version => {
+            println!("cppobfuscator {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
         }
-        input.push_str(&line);
-    }
+        Command::Run(config) => config,
+    };
 
-    input
+    let source = read_source(&config)?;
+    let output = obfuscate(&source, &config.options).map_err(|error| error.to_string())?;
+    write_output(&config, output.as_bytes())
 }
 
-fn prompt_simple_names(handle: &mut dyn BufRead) -> bool {
-    eprint!("Enable simple-names? [y/N]: ");
-    let _ = io::stderr().flush();
-    let mut line = String::new();
-    if handle.read_line(&mut line).is_err() {
-        return false;
+fn read_source(config: &Config) -> Result<String, String> {
+    if let Some(path) = &config.input {
+        return fs::read_to_string(path)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()));
     }
-    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+
+    let mut source = String::new();
+    io::stdin()
+        .read_to_string(&mut source)
+        .map_err(|error| format!("failed to read stdin as UTF-8: {error}"))?;
+    Ok(source)
+}
+
+fn write_output(config: &Config, output: &[u8]) -> Result<(), String> {
+    if let Some(path) = &config.output {
+        return fs::write(path, output)
+            .map_err(|error| format!("failed to write {}: {error}", path.display()));
+    }
+
+    io::stdout()
+        .lock()
+        .write_all(output)
+        .map_err(|error| format!("failed to write stdout: {error}"))
 }

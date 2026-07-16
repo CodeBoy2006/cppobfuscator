@@ -1,149 +1,157 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone)]
-pub struct Config {
+use cppobfuscator::Options;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Config {
     pub input: Option<PathBuf>,
     pub output: Option<PathBuf>,
-    pub seed: u64,
-    pub rename: bool,
-    pub minify: bool,
-    pub inline: bool,
-    pub constlift: bool,
-    pub strip_comments: bool,
-    pub strip_unused_macros: bool,
-    pub strip_unused_functions: bool,
-    pub strip_unused_globals: bool,
-    pub preserve: Vec<String>,
-    pub wizard: bool,
-    pub wizard_end: String,
-    pub expand_macros: bool,
-    pub simple_names: bool,
+    pub options: Options,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Command {
+    Run(Config),
+    Help,
+    Version,
 }
 
 impl Config {
-    pub fn parse() -> Result<Self, String> {
+    pub(crate) fn parse() -> Result<Command, String> {
+        Self::parse_args(env::args().skip(1))
+    }
+
+    fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
         let mut input = None;
         let mut output = None;
-        let mut seed = 0xC0FFEE_u64;
-        let mut rename = true;
-        let mut minify = true;
-        let mut inline = true;
-        let mut constlift = true;
+        let mut seed = Options::default().seed;
+        let mut compact = true;
         let mut strip_comments = true;
-        let mut strip_unused_macros = true;
-        let mut strip_unused_functions = true;
-        let mut strip_unused_globals = true;
-        let mut preserve = Vec::new();
-        let mut wizard = false;
-        let mut wizard_end = String::from("END");
-        let mut expand_macros = true;
-        let mut simple_names = false;
+        let mut preserve = BTreeSet::new();
+        let mut args = args.into_iter();
 
-        let raw_args: Vec<String> = env::args().skip(1).collect();
-        let mut args = raw_args.into_iter().peekable();
-        if args.peek().is_none() {
-            wizard = true;
-        }
-        while let Some(arg) = args.next() {
-            match arg.as_str() {
-                "-h" | "--help" => return Err(Self::usage()),
+        while let Some(argument) = args.next() {
+            match argument.as_str() {
+                "-h" | "--help" => return Ok(Command::Help),
+                "-V" | "--version" => return Ok(Command::Version),
                 "-i" | "--input" => {
-                    let path = args.next().ok_or("--input requires a path")?;
-                    input = Some(PathBuf::from(path));
+                    input = Some(PathBuf::from(required_value(&mut args, "--input")?));
                 }
                 "-o" | "--output" => {
-                    let path = args.next().ok_or("--output requires a path")?;
-                    output = Some(PathBuf::from(path));
+                    output = Some(PathBuf::from(required_value(&mut args, "--output")?));
                 }
                 "--seed" => {
-                    let raw = args.next().ok_or("--seed requires a value")?;
-                    seed = raw
-                        .parse::<u64>()
-                        .map_err(|_| "--seed must be an unsigned integer")?;
+                    let value = required_value(&mut args, "--seed")?;
+                    seed = parse_seed(&value)?;
                 }
-                "--no-rename" => rename = false,
-                "--no-minify" => minify = false,
-                "--no-inline" => inline = false,
-                "--no-constlift" => constlift = false,
-                "--keep-comments" => strip_comments = false,
-                "--no-strip-unused-macros" => strip_unused_macros = false,
-                "--no-strip-unused-functions" => strip_unused_functions = false,
-                "--no-strip-unused-globals" => strip_unused_globals = false,
                 "--preserve" => {
-                    let raw = args.next().ok_or("--preserve requires a name")?;
-                    preserve.push(raw);
-                }
-                "--wizard" => wizard = true,
-                "--wizard-end" => {
-                    let raw = args.next().ok_or("--wizard-end requires a value")?;
-                    if raw.is_empty() {
-                        return Err("--wizard-end cannot be empty".to_string());
+                    let name = required_value(&mut args, "--preserve")?;
+                    if !is_identifier(&name) {
+                        return Err(format!("--preserve expects a C++ identifier, got {name:?}"));
                     }
-                    wizard_end = raw;
-                    wizard = true;
+                    preserve.insert(name);
                 }
-                "--simple-names" => simple_names = true,
-                "--no-expand-macros" => expand_macros = false,
-                _ => return Err(format!("Unknown argument: {arg}\n\n{}", Self::usage())),
+                "--keep-comments" => strip_comments = false,
+                "--keep-layout" => compact = false,
+                _ => {
+                    return Err(format!("unknown argument: {argument}\n\n{}", Self::usage()));
+                }
             }
         }
 
-        if wizard && input.is_some() {
-            return Err("--wizard cannot be used with --input".to_string());
-        }
-        if simple_names && !rename {
-            return Err("--simple-names cannot be used with --no-rename".to_string());
-        }
-        if simple_names {
-            constlift = false;
-        }
-
-        Ok(Self {
+        Ok(Command::Run(Self {
             input,
             output,
-            seed,
-            rename,
-            minify,
-            inline,
-            constlift,
-            strip_comments,
-            strip_unused_macros,
-            strip_unused_functions,
-            strip_unused_globals,
-            preserve,
-            wizard,
-            wizard_end,
-            expand_macros,
-            simple_names,
-        })
+            options: Options {
+                seed,
+                compact,
+                strip_comments,
+                preserve,
+            },
+        }))
     }
 
-    pub fn usage() -> String {
-        let text = r#"cppobfuscator - C++ single-file obfuscator
+    pub(crate) fn usage() -> &'static str {
+        r#"cppobfuscator - Tree-sitter based C++ single-file obfuscator
 
 USAGE:
-  cppobfuscator [options]
+  cppobfuscator [OPTIONS]
 
 OPTIONS:
-  -i, --input <path>        Input C++ file (defaults to stdin)
-  -o, --output <path>       Output file (defaults to stdout)
-  --seed <u64>              Seed for deterministic renaming (default: 0xC0FFEE)
-  --no-rename               Disable identifier renaming
-  --no-minify               Preserve original whitespace/newlines
-  --no-inline               Disable inline substitution for simple functions
-  --no-constlift            Disable constant expression lifting
-  --keep-comments           Preserve comments (default strips)
-  --no-strip-unused-macros  Keep unused #define macros (default strips)
-  --no-strip-unused-functions  Keep unused function definitions (default strips)
-  --no-strip-unused-globals  Keep unused global variables/objects (default strips)
-  --no-expand-macros        Skip macro expansion before obfuscation
-  --simple-names            Rename identifiers to 1-2 character names (disables constlift)
-  --preserve <name>         Preserve an identifier (repeatable)
-  --wizard                  Interactive mode: paste code, end with marker line
-  --wizard-end <marker>     Marker line to finish wizard input (default: END)
-  -h, --help                Show this help
-"#;
-        text.to_string()
+  -i, --input <PATH>       Read C++ source from a file (default: stdin)
+  -o, --output <PATH>      Write transformed source to a file (default: stdout)
+      --seed <U64>         Rename seed; decimal or 0x-prefixed (default: 0xC0FFEE)
+      --preserve <NAME>    Preserve an identifier; may be repeated
+      --keep-comments      Keep comments
+      --keep-layout        Keep original whitespace and line layout
+  -h, --help               Print help
+  -V, --version            Print version
+"#
+    }
+}
+
+fn required_value(args: &mut impl Iterator<Item = String>, option: &str) -> Result<String, String> {
+    args.next()
+        .ok_or_else(|| format!("{option} requires a value"))
+}
+
+fn parse_seed(value: &str) -> Result<u64, String> {
+    let parsed = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .map_or_else(|| value.parse::<u64>(), |hex| u64::from_str_radix(hex, 16));
+    parsed.map_err(|_| format!("invalid --seed value: {value:?}"))
+}
+
+fn is_identifier(name: &str) -> bool {
+    let mut characters = name.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    (first == '_' || first.is_alphabetic())
+        && characters.all(|character| character == '_' || character.is_alphanumeric())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(arguments: &[&str]) -> Result<Command, String> {
+        Config::parse_args(arguments.iter().map(|argument| (*argument).to_string()))
+    }
+
+    #[test]
+    fn parses_ast_options() {
+        let command = parse(&[
+            "--seed",
+            "0x2a",
+            "--keep-comments",
+            "--keep-layout",
+            "--preserve",
+            "solve",
+        ])
+        .unwrap();
+        let Command::Run(config) = command else {
+            panic!("expected run command");
+        };
+
+        assert_eq!(config.options.seed, 42);
+        assert!(!config.options.compact);
+        assert!(!config.options.strip_comments);
+        assert!(config.options.preserve.contains("solve"));
+    }
+
+    #[test]
+    fn rejects_removed_legacy_options() {
+        let error = parse(&["--no-inline"]).unwrap_err();
+        assert!(error.contains("unknown argument"));
+    }
+
+    #[test]
+    fn validates_preserved_identifiers() {
+        let error = parse(&["--preserve", "not-a-name"]).unwrap_err();
+        assert!(error.contains("C++ identifier"));
     }
 }

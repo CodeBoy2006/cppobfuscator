@@ -1,92 +1,98 @@
 # cppobfuscator
 
-English (default) | [Chinese (中文)](README.zh.md)
+English | [Chinese (中文)](README.zh.md)
 
-> ⚠️ Note: Please abide by platform regulations. You are solely responsible for any consequences resulting from the misuse of this tool.
+`cppobfuscator` is a correctness-first obfuscator for one UTF-8 C++ translation unit, aimed at single-file competitive-programming code. It uses Tree-sitter C++ syntax nodes, lexical scopes, and byte-range edits instead of global text replacement.
 
-## Overview
+> Use this tool only where contest and platform rules allow it. You are responsible for validating and submitting the generated source.
 
-`cppobfuscator` is a single-file C++ obfuscator written in Rust. It can:
+## Design
 
-- Rename identifiers (optional simple 1-2 character mode).
-- Minify whitespace.
-- Inline simple functions.
-- Obfuscate integer literals (constlift).
-- Expand macros (internal expander; can be disabled).
-- Strip unused macros, functions, and globals.
-- Provide a wizard mode for interactive input.
+The transformation pipeline is intentionally narrow:
 
-## Usage
+1. Parse the original source with `tree-sitter-cpp`.
+2. Build lexical scopes, declaration points, overload groups, and identifier references.
+3. Generate non-overlapping byte-range rename edits.
+4. Reparse and require the same non-comment AST structure.
+5. Remove comments and/or compact layout.
+6. Reparse and validate the AST structure again.
+
+Version `0.2` deliberately removes the old text-based macro expansion, function inlining, integer constant lifting, and unused-code deletion passes. Those transformations could change evaluation order, overload resolution, initialization side effects, or valid template code.
+
+## Rename Policy
+
+The tool renames symbols only when its lexical model can resolve them consistently:
+
+- Local variables, structured bindings, lambda init-captures, and parameters.
+- Ordinary free functions, including overload groups.
+- File-scope and namespace variables when references are unambiguous.
+
+The following are preserved conservatively:
+
+- `main`, user-specified names, unresolved names, and reserved identifiers.
+- Types, namespaces, fields, methods, operators, labels, and qualified names.
+- `extern` and language-linkage entities.
+- Namespace functions declared through `friend`.
+- Macro names and non-parameter identifiers used in macro replacement text.
+
+Generated names use lowercase letters and digits, never collide with an identifier already present in the source, and are deterministic for a given seed.
+
+## Source Handling
+
+- Macros are not expanded, and replacement text is not rewritten.
+- Common function-like statement macros whose replacement starts with `for`, `if`, `while`, or `switch` are accepted conservatively.
+- Multi-line macro continuations are retained.
+- Raw strings, UTF-8 text, digit separators, and user-defined literal suffixes remain intact.
+- Token-pasting macros using `##` or `%:%:` are rejected because they can synthesize identifiers that do not exist in the parsed AST.
+
+Tree-sitter is a syntax parser, not a C++ compiler or preprocessor. Always compile and test the generated file with the same compiler flags used for submission.
+
+## CLI
+
+```text
+cppobfuscator [OPTIONS]
+
+-i, --input <PATH>       Read C++ source from a file (default: stdin)
+-o, --output <PATH>      Write transformed source to a file (default: stdout)
+    --seed <U64>         Rename seed; decimal or 0x-prefixed (default: 0xC0FFEE)
+    --preserve <NAME>    Preserve an identifier; may be repeated
+    --keep-comments      Keep comments
+    --keep-layout        Keep original whitespace and line layout
+-h, --help               Print help
+-V, --version            Print version
+```
+
+File input and output:
 
 ```bash
-cppobfuscator [options]
+cppobfuscator -i solution.cpp -o solution.obfuscated.cpp
 ```
 
-If you are running from source:
+Pipe through stdin/stdout:
 
 ```bash
-cargo run -- [options]
+cppobfuscator --seed 42 < solution.cpp > solution.obfuscated.cpp
 ```
 
-### Default wizard behavior
-
-If no arguments are provided, the tool enters wizard mode automatically.
-It will prompt:
-
-```
-Enable simple-names? [y/N]:
-```
-
-Then paste your C++ code and end with the marker line (default: `END`).
-
-## Options
-
-- `-i, --input <path>`: Input C++ file (defaults to stdin).
-- `-o, --output <path>`: Output file (defaults to stdout).
-- `--seed <u64>`: Seed for deterministic renaming (default: `0xC0FFEE`).
-- `--no-rename`: Disable identifier renaming.
-- `--simple-names`: Rename identifiers to 1-2 character names (disables constlift).
-- `--no-minify`: Preserve original whitespace/newlines.
-- `--no-inline`: Disable inline substitution for simple functions.
-- `--no-constlift`: Disable integer literal obfuscation.
-- `--keep-comments`: Preserve comments (default strips).
-- `--no-strip-unused-macros`: Keep unused `#define` macros (default strips).
-- `--no-strip-unused-functions`: Keep unused function definitions (default strips).
-- `--no-strip-unused-globals`: Keep unused global variables/objects (default strips).
-- `--no-expand-macros`: Skip macro expansion before obfuscation.
-- `--preserve <name>`: Preserve an identifier (repeatable).
-- `--wizard`: Interactive mode (cannot be used with `--input`).
-- `--wizard-end <marker>`: Marker line to finish wizard input (default: `END`).
-- `-h, --help`: Show help.
-
-Notes:
-- `--simple-names` cannot be used with `--no-rename`.
-- `--wizard-end` implies wizard mode.
-
-## Examples
-
-Obfuscate a file:
+Preserve an externally required function:
 
 ```bash
-cppobfuscator -i test.cpp -o test_obf.cpp
+cppobfuscator --preserve solve -i solution.cpp -o solution.obfuscated.cpp
 ```
 
-Enable simple names:
+## Rust API
+
+```rust
+use cppobfuscator::{Options, obfuscate};
+
+let output = obfuscate(source, &Options::default())?;
+```
+
+## Development
 
 ```bash
-cppobfuscator -i test.cpp -o test_obf.cpp --simple-names
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets
+cargo build --release
 ```
-
-Keep comments and formatting:
-
-```bash
-cppobfuscator -i test.cpp -o test_obf.cpp --keep-comments --no-minify
-```
-
-Use wizard mode:
-
-```bash
-cppobfuscator
-```
-
-Then follow the prompt and paste code, ending with `END`.
